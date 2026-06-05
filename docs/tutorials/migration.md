@@ -791,3 +791,92 @@ end
 ### Protocol changes
 
 Rspamd now exclusively uses the HTTP protocol for all operations, making the use of additional client libraries unnecessary. Additionally, the fallback to the older `spamc` protocol has been implemented to ensure automatic compatibility with software such as `rmilter` and other programs that use the `rspamc` protocol.
+
+## Migration to Rspamd 4.1.0
+
+### 1. Default `rspamd.com` Fuzzy Rule Now Discovered via SRV
+
+The bundled default fuzzy rule no longer carries a hardcoded round-robin host list. It now uses `service=fuzzy+rspamd.com`, which makes the upstream parser resolve the `_fuzzy._tcp.rspamd.com` SRV record and manage backends and ports entirely in DNS ([b912c67a3](https://github.com/rspamd/rspamd/commit/b912c67a3)).
+
+**Who is affected:** All installs that rely on the shipped `rspamd.com` fuzzy rule. Most deployments need **no action** — the resolver handles SRV transparently, the legacy `fuzzy1`/`fuzzy2` hostnames still resolve to every live backend, and installs that already pinned an explicit server string are unchanged. You only need to act if your resolver cannot serve SRV records (split-horizon DNS, a restrictive forwarder, or a firewall that drops SRV).
+
+> An earlier regression made `rspamadm configtest` reject an SRV-only rule with `no servers defined for fuzzy rule with name: rspamd.com`; that is fixed in [64e1a6b5e](https://github.com/rspamd/rspamd/commit/64e1a6b5e). A resolver that silently fails to return SRV records will still leave the rule with no usable backends at runtime.
+
+Verify SRV resolution works in your environment:
+
+```bash
+dig SRV _fuzzy._tcp.rspamd.com +short
+```
+
+If SRV cannot be resolved, pin explicit servers back in `local.d/fuzzy_check.conf` (the legacy hostnames remain valid):
+
+~~~hcl
+rule "rspamd.com" {
+  # restore the pre-4.1.0 hostname-based selection
+  servers = "fuzzy1.rspamd.com:11335,fuzzy2.rspamd.com:11335";
+}
+~~~
+
+### 2. `mx_check` Module Reworked: Symbols Renamed, Options Deprecated
+
+The `mx_check` module was rewritten with a three-layer Redis cache, finer-grained outcomes, and IP-class classification ([219fd9818](https://github.com/rspamd/rspamd/commit/219fd9818), [f70285614](https://github.com/rspamd/rspamd/commit/f70285614), [0eb4c443e](https://github.com/rspamd/rspamd/commit/0eb4c443e)). The symbol surface and several option names changed.
+
+**Who is affected:** Only deployments that explicitly enabled and configured `mx_check`. The module is not active in a stock configuration.
+
+**a) Renamed symbols.** `MX_NXDOMAIN` and `MX_MISSING` no longer exist — both collapse into `MX_NONE`. A large set of new symbols was added (`MX_GOOD`, `MX_INVALID`, `MX_A_*`, `MX_LOCAL_ONLY`/`MX_LOCAL_MIX`, `MX_BOGON_ONLY`/`MX_BOGON_MIX`, `MX_NULL`, `MX_BAD`, `MX_IP_BAD`, `MX_INFLIGHT`, `MX_TIMEOUT_*`, `MX_REFUSED`, `MX_ERROR`, `MX_REDIS_ERROR`, …). Update any custom scores, composites, `force_actions`, or rules that referenced `MX_NXDOMAIN` / `MX_MISSING`. Scores are now exposed through a dedicated `mx` group; tune them in `local.d/mx_group.conf` or `override.d/mx_group.conf` instead of hardcoding per-symbol overrides:
+
+~~~hcl
+# local.d/mx_group.conf
+symbols {
+  "MX_NONE"   { score = 0.5; }
+  "MX_INVALID" { score = 2.0; }
+}
+~~~
+
+**b) Renamed options.** `timeout` → `connect_timeout`, and `wait_for_greeting` → `verify_greeting`. The legacy names are still accepted but log a deprecation warning, and the module warns if a legacy key and its replacement are both set ([37027b0ee](https://github.com/rspamd/rspamd/commit/37027b0ee)). Update `local.d/mx_check.conf`:
+
+~~~hcl
+# before:
+#   timeout = 5s;
+#   wait_for_greeting = true;
+# after:
+connect_timeout = 5s;
+verify_greeting  = true;
+~~~
+
+**c) Removed option.** `reject_nxdomain_mx` was removed. Null-MX rejection is now handled by `reject_null_mx` (gated by `reject_authorized` / `reject_local`).
+
+**d) Redis cache layout.** The single domain-keyed cache is replaced by three namespaces (`<key_prefix>:d:`, `:m:`, `:i:`). Old single-layer entries are treated as a cache miss and overwritten in place — no manual flush is required, but expect a cold cache (extra DNS/TCP work) for a while after the upgrade.
+
+### 3. Neural ANN Digest Changes Under `disable_symbols_input`
+
+When `disable_symbols_input = true`, the profile digest that forms part of the trained ANN's Redis key (`rn_<rule>_<settings>_<digest>_<v>`) is now derived from the providers configuration instead of the symbol list ([1323fc5fb](https://github.com/rspamd/rspamd/commit/1323fc5fb), [ed97ec8a7](https://github.com/rspamd/rspamd/commit/ed97ec8a7)). This makes the digest stable across unrelated symbol changes (a new RBL, multimap, or SA-style rule), but it rotates **once** on the first start after upgrading.
+
+**Who is affected:** Only neural deployments running with `disable_symbols_input = true` **and** an already-trained ANN stored in Redis. On first 4.1.0 start the existing ANN is orphaned under its old key, and inference drops to zero until a new model trains (potentially weeks under realistic class imbalance).
+
+You have two options:
+
+- **Let it retrain** — accept reduced neural coverage until enough samples accumulate.
+- **Migrate the trained model once.** Locate the orphaned key and copy it to the new digest. After this one migration the digest stays stable across future config changes:
+
+```bash
+# inspect existing neural keys to find the old/new digest pair
+redis-cli --scan --pattern 'rn_*'
+
+# copy the trained model from the old digest to the new one
+redis-cli COPY rn_<rule>_<settings>_<old>_<v> rn_<rule>_<settings>_<new>_<v>
+```
+
+### 4. `mailto:` URLs Stored in Canonical Slash-less Form
+
+Bare email addresses and explicit `mailto:` URLs are now canonicalised to the same slash-less `mailto:user@host` string, per RFC 6068 ([a4ae51536](https://github.com/rspamd/rspamd/commit/a4ae51536), [6512946b2](https://github.com/rspamd/rspamd/commit/6512946b2)). Previously a bare email was injected as a literal `mailto://user@host` prefix, so the two forms landed in different dedup buckets and the same address could appear twice.
+
+**Who is affected:** Only custom rules, multimaps, or selectors that string-match the literal `mailto://` form of an email URL returned by `task:get_urls()`. Those patterns now need to match `mailto:` (no `//`). As a side effect, a message containing both a bare address and the same explicit `mailto:` link now yields a single deduplicated URL rather than two, which can change URL counts in custom logic.
+
+Update any such patterns, for example:
+
+~~~hcl
+# before:  /^mailto:\/\//
+# after:
+mailto_url = "mailto:";
+~~~
