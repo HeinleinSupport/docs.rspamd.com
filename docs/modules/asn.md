@@ -10,16 +10,16 @@ The retrieved information is stored as mempool variables and made available to o
 
 ## How it works
 
-The module performs DNS TXT lookups against a DNSBL-style service. For an IP address like `8.8.8.8`, it queries `8.8.8.8.asn.rspamd.com` and receives a response like:
+The module performs DNS TXT lookups against a DNSBL-style service. The IP octets are reversed before the lookup, so for an IP address like `1.2.3.4` the query is `4.3.2.1.asn.rspamd.com`. For example, querying `1.2.3.4` receives a response like:
 
 ```
-15169 | 8.8.8.0/24 | US | arin |
+1234 | 1.2.3.0/24 | DE | ripe |
 ```
 
 This is parsed to extract:
-- **ASN**: `15169` (Google's AS number)
-- **IP Network**: `8.8.8.0/24` (the announced subnet)
-- **Country**: `US` (country code)
+- **ASN**: `1234` (the AS number)
+- **IP Network**: `1.2.3.0/24` (the announced subnet)
+- **Country**: `DE` (country code)
 
 ## Exported variables
 
@@ -48,7 +48,8 @@ The ASN module is enabled by default. Settings can be added to `/etc/rspamd/loca
 | `provider_info` | object | (see below) | Provider-specific settings |
 | `symbol` | string | `ASN` | Symbol to insert with lookup results |
 | `check_local` | boolean | `false` | Perform lookups for local/private IP addresses |
-| `check_authed` | boolean | `false` | Perform lookups for authenticated users |
+| `check_authed` | boolean | `true` | Perform lookups for authenticated users |
+| `symbol_fail` | string | `ASN_FAIL` | Symbol to insert when the DNS lookup fails |
 
 ### Provider info defaults
 
@@ -86,7 +87,7 @@ The ASN data can be accessed from Lua plugins after the prefilters stage:
 
 ~~~lua
 local function my_callback(task)
-  local dominated = task:get_mempool():get_variable('asn')
+  local asn = task:get_mempool():get_variable('asn')
   local country = task:get_mempool():get_variable('country')
   local ipnet = task:get_mempool():get_variable('ipnet')
   

@@ -63,6 +63,7 @@ metadata_exporter {
 ### Stock pushers (backends)
 
  - `http`: sends content over HTTP POST
+ - `json_raw_tcp`: sends JSON content over a raw TCP connection
  - `redis_pubsub`: sends content over Redis Pub/Sub
  - `redis_stream` (4.0+): sends content to a Redis Stream
  - `send_mail`: sends content over SMTP
@@ -70,8 +71,8 @@ metadata_exporter {
 ### Stock selectors
 
  - `default`: selects all mail
- - `is_spam`: matches messages with `reject` or `add header` action
- - `is_spam_authed`: matches messages with `reject` or `add header` action from authenticated users
+ - `is_spam`: matches messages with `reject`, `add header`, or `rewrite subject` action
+ - `is_spam_authed`: matches messages with `reject`, `add header`, or `rewrite subject` action from authenticated users
  - `is_reject`: matches messages with `reject` action
  - `is_reject_authed`: matches messages with `reject` action from authenticated users
  - `is_not_soft_reject`: matches all messages except those with `soft reject` action
@@ -84,7 +85,7 @@ metadata_exporter {
  - `multipart` (3.14.2+): Sends metadata as JSON part + raw message as `message/rfc822` part using standard `multipart/form-data`
  - `msgpack` (3.14.2+): Binary MessagePack format with embedded message (efficient for binary data)
  - `json_with_message` (3.14.2+): JSON with base64-encoded message
- - `structured` (4.0+): Rich structured export with UUID v7 correlation, extracted text, attachments, images, URLs in MessagePack format
+ - `structured` (4.0+): Rich structured export with Rspamd UUID correlation, extracted text, attachments, images, URLs in MessagePack format
 
 ### Settings: general
 
@@ -106,6 +107,10 @@ The following settings can be defined on any rule:
  - `gzip` (bool): specifies whether the payload needs to be sent with gzip compression (default: `false`)
  - `keepalive` (bool): specifies whether the connection should use keepalive (default: `false`)
  - `no_ssl_verify` (bool): disable SSL certificate verification (default: `false`)
+ - `connect_timeout`: timeout for establishing the TCP connection
+ - `ssl_timeout`: timeout for SSL handshake
+ - `write_timeout`: timeout for writing the request body
+ - `read_timeout`: timeout for reading the response
 
 ### Settings: `redis_pubsub` backend
 
@@ -122,6 +127,13 @@ See [here](/configuration/redis) for information on configuring Redis servers.
  - `per_recipient`: if `true`, creates per-recipient streams by appending `:recipient@address` to `stream_key`
 
 The backend uses Redis `XADD` command. This is useful for building event-driven pipelines with consumer groups.
+
+### Settings: `json_raw_tcp` backend
+
+ - `host` (required): hostname or IP address of the TCP server
+ - `port` (required): TCP port to connect to
+
+The backend sends the formatted content as-is over a raw TCP connection without an application-layer framing protocol. No response is read from the server. Combine with the `json` formatter to push newline-delimited JSON to a log aggregator or SIEM.
 
 ### Settings: `send_mail` backend
 
@@ -145,7 +157,7 @@ The default value for `email_template` is as follows:
 
 ~~~
 From: "Rspamd" <$mail_from>
-To: <$mail_to>
+To: $mail_to
 Subject: Spam alert
 Date: $date
 MIME-Version: 1.0
@@ -352,7 +364,7 @@ metadata_exporter {
 
 ### Structured formatter (4.0+)
 
-The `structured` formatter provides rich, analysis-ready metadata in MessagePack format with native UUID v7 correlation:
+The `structured` formatter provides rich, analysis-ready metadata in MessagePack format with Rspamd UUID correlation:
 
 ~~~hcl
 metadata_exporter {
@@ -373,7 +385,7 @@ metadata_exporter {
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `uuid` | String | Native UUID v7 (RFC 9562) with 48-bit timestamp prefix |
+| `uuid` | String | Rspamd internal message UUID (from `task:get_uuid()`) |
 | `ip` | String | Sender IP address |
 | `from` | String | SMTP envelope sender |
 | `rcpt` | String | SMTP envelope recipient |
@@ -391,7 +403,7 @@ metadata_exporter {
 
 #### Structured formatter features
 
-- **UUID v7 correlation**: Time-ordered UUID enables efficient cross-system correlation and time-series analysis
+- **UUID correlation**: Rspamd's internal message UUID enables cross-system correlation via the injected `X-Rspamd-UUID` header
 - **X-Rspamd-UUID header**: Automatically injected into message for IMAP/external correlation
 - **Smart text extraction**: Cleaned, reply-trimmed text up to 32KB
 - **Attachment analysis**: Includes detected MIME type (not just announced), size, digest, and optional content

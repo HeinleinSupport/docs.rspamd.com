@@ -32,7 +32,7 @@ Each whitelist rule can work in 3 modes:
 
 - `whitelist` (default): add symbol when a domain has been found and one of constraints defined is satisfied (e.g. `valid_dmarc`)
 - `blacklist`: add symbol when a domain has been found and one of constraints defined is *NOT* satisfied (e.g. `valid_dmarc`)
-- `strict`: add symbol with negative (ham) score when a domain has been found and one of constraints defined is satisfied (e.g. `valid_dmarc`) and add symbol with **POSITIVE** (spam) score when some of constraints defined has failed
+- `strict`: add symbol with negative (ham) score when a domain has been found and one of constraints defined is satisfied (e.g. `valid_dmarc`) and add symbol with **POSITIVE** (spam) score when some of constraints defined has failed. When `strict = true` is set at the rule level, the module internally forces `how = both` for every map lookup, regardless of the per-entry value prefix (`wl:`, `bl:`, or plain multiplier). This means both the ham and the spam branches are always active for all domains in the list.
 
 If no constraints are defined, both the `strict` and `whitelist` rules will apply to all emails from the specified domains. For `blacklist` rules, a positive score is typically assigned to the result.
 
@@ -62,6 +62,8 @@ You can also set the default metric settings using the ordinary attributes, such
 - `group`: default group (`whitelist` group is used if not specified explicitly)
 - `one_shot`: default one shot mode
 - `description`: default description
+- `inverse_symbol`: name of a virtual symbol that is registered as a child of the main rule symbol and fired on the **violated** (blacklist/spam) branch instead of the main symbol. Its default score is set to the negation of the main rule's `score`. Use this when you want the whitelist hit and the violation hit to appear as separate symbols in the metric.
+- `inverse_multiplier`: a numeric multiplier applied to the score **only** on the violated branch (i.e., when a policy failure is detected). This is independent of per-entry map multipliers.
 
 In lists, you also have the option to include an optional `multiplier` argument, which specifies an additional multiplier for the score assigned by this module. For instance, if you want to assign a score twice as large for `github.com`, you can define it as follows:
 
@@ -81,8 +83,8 @@ The following global options can be set for the whitelist module:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `check_local` | false | Apply whitelist rules to messages from local IPs |
-| `check_authed` | false | Apply whitelist rules to messages from authenticated users |
+| `check_local` | false | Apply the **blacklist** (violation) branch to messages from local IPs. When `false`, local senders that trigger an SPF or DMARC blacklist hit are silently skipped; whitelist hits are always applied regardless of this setting. Note: DKIM-only blacklist rules are not subject to this exemption. |
+| `check_authed` | false | Same as `check_local` but for authenticated (SMTP AUTH) users. |
 | `dmarc_allow_symbol` | `DMARC_POLICY_ALLOW` | Symbol to check for DMARC validation |
 | `spf_allow_symbol` | `R_SPF_ALLOW` | Symbol to check for SPF validation |
 | `dkim_allow_symbol` | `R_DKIM_ALLOW` | Symbol to check for DKIM validation |

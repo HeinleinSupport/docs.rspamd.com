@@ -43,7 +43,7 @@ known_senders {
   use_bloom = false;           # requires RedisBloom if true
   redis_key = "rs_known_senders";
   max_senders = 100000;        # max elements kept in set/filter
-  #max_ttl = 30d;              # when not using Bloom filters
+  max_ttl = 30d;               # default 30 days; applies to non-Bloom (ZSET) storage
 
   # Symbols
   symbol = "KNOWN_SENDER";
@@ -54,7 +54,7 @@ known_senders {
   # Replies-related (must match settings in the replies module when changed)
   sender_prefix = "rsrk";
   sender_key_global = "verified_senders";
-  sender_key_size = 20;
+  sender_key_size = 20;        # applies to global reply-set keys only; local keys are always 8 chars
   max_recipients = 15;         # recipients to verify for local set
 
   # Optional privacy for reply sender before hashing
@@ -65,14 +65,18 @@ known_senders {
 }
 ~~~
 
-You should also assign weights to the inserted symbols in your metrics if needed.
-
 ## Symbols
 
-- `KNOWN_SENDER` (configurable via `symbol`): sender already known
-- `UNKNOWN_SENDER` (via `symbol_unknown`): first-time sender stored now
-- `INC_MAIL_KNOWN_GLOBALLY` (via `symbol_check_mail_global`): sender verified by global replies set
-- `INC_MAIL_KNOWN_LOCALLY` (via `symbol_check_mail_local`): at least one recipient verified by the sender’s local replies set
+The module registers the following symbols with hard-coded default scores:
+
+| Symbol | Option | Default score | Meaning |
+|--------|--------|---------------|---------|
+| `KNOWN_SENDER` | `symbol` | -1.0 | sender already known |
+| `UNKNOWN_SENDER` | `symbol_unknown` | +0.5 | first-time sender stored now |
+| `INC_MAIL_KNOWN_GLOBALLY` | `symbol_check_mail_global` | -1.0 | sender verified by global replies set |
+| `INC_MAIL_KNOWN_LOCALLY` | `symbol_check_mail_local` | -1.0 | at least one recipient verified by the sender’s local replies set |
+
+Override these scores in your metrics configuration as needed.
 
 ## Requirements
 
@@ -87,4 +91,5 @@ loadmodule /path/to/redisbloom.so
 
 - If you change `sender_prefix` in `local.d/replies.conf`, change it here as well to keep sets aligned.
 - `domains` accepts the same map forms used elsewhere (file/HTTP/HTTPS, compressed maps, etc.).
+- `sender_key_size` (default 20) controls the length of the **global** reply-set key only. Local per-sender reply-set keys are always truncated to 8 characters regardless of this setting.
 

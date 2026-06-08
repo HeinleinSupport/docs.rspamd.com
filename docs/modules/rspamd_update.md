@@ -52,26 +52,31 @@ map = "sign+key=<key_string>+http://example.com/map"
 
 The module itself has very few parameters:
 
-* `key`: use this key (base32 encoded) as trusted key
+* `key`: use this key (base32 encoded) as trusted key for verifying HTTP-fetched maps
 
-All other keys are threated as rules to load maps. By default, Rspamd tries to load signed updates from `rspamd.com` site using trusted key `qxuogdh5eghytji1utkkte1dn3n81c3y5twe61uzoddzwqzuxxyb`:
+All other keys are treated as rules (maps) to load. **The module is disabled by default.** If no `rules` are configured, the module logs "Module is unconfigured" and disables itself at startup. You must provide at least one `rules` entry to activate it.
+
+A minimal example with a signed HTTP map:
 
 ~~~hcl
 rspamd_update {
-    rules = "sign+http://rspamd.com/update/rspamd-${BRANCH_VERSION}.ucl";
-    key = "qxuogdh5eghytji1utkkte1dn3n81c3y5twe61uzoddzwqzuxxyb";
+    rules = "sign+http://example.com/update/rspamd-rules.ucl";
+    key = "<your-base32-public-key>";
 }
 ~~~
 
+For local or trusted-network maps you may omit signing, but signing is recommended. When a map is loaded over HTTP or HTTPS without a signing key and no `key` is set in the configuration, rspamd will warn in the log but still attempt to load the map.
+
 ## Updates structure
 
-Update files are quite simple: they have 3 sections:
+Update files are UCL documents. They support the following sections:
 
-* `symbols` - list of new scores for symbols that are already in rspamd (loaded with `priority = 1` to override default settings)
-* `actions` - list of scores for actions (also loaded with `priority = 1`)
-* `rules` - list of lua code fragments to load into rspamd, they can use `rspamd_config` global to register new rules
+* `symbols` - map of symbol name to new score; loaded with `priority = 1` to override default settings
+* `actions` - map of action name to threshold score; also loaded with `priority = 1`
+* `min_version` / `max_version` - optional version constraints; the update is skipped if the running rspamd version is outside the specified range
+* `rules` - **currently not executed**. The `rules` section (Lua code fragments) is silently skipped at runtime because the module has `allow_rules = false` hardcoded. Entries in this section are parsed but never run.
 
-Here is an example of update file:
+Here is an example of an update file (the `rules` block is shown for reference but will not be executed):
 
 ~~~hcl
 rules = {

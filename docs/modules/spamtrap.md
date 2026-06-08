@@ -18,6 +18,8 @@ An example of a map is shown below.
 
 Parameters for the spamtrap modules are listed here.
 
+The module registers a callback symbol `SPAMTRAP_CHECK` (type `callback,postfilter`) as the parent of the virtual `SPAMTRAP` symbol. `SPAMTRAP_CHECK` runs the spamtrap logic; `SPAMTRAP` is the virtual symbol inserted into results when a match is found.
+
 - `action`: You can optionally set an action
 - `symbol`: The name of a symbol that will be inserted, if a match between
   recipient and a spam trapped email/domain was found. Defaults to 'SPAMTRAP'
@@ -27,7 +29,7 @@ Parameters for the spamtrap modules are listed here.
 - `learn_spam`: A boolean that enables or disables bayes spam learning. Defaults
   to 'false'
 - `fuzzy_flag`: Fuzzy flag, which must match with a defined flag in fuzzy_check
-  for a 'denied' rule
+  for a 'denied' rule. Defaults to `1`
 - `fuzzy_weight`: A weight factor for the fuzzy rule. It defaults to 10.0
 - `key_prefix`: The Redis prefix which is used to find spamtrap records. It
   defaults to 'sptr\_'
@@ -36,6 +38,7 @@ Parameters for the spamtrap modules are listed here.
 - `check_authed`: A boolean that enables spamtrap checks for authenticated users. Defaults to 'true'
 - `check_local`: A boolean that enables spamtrap checks for local networks. Defaults to 'true'
 - `allow_multiple_rcpts`: A boolean that enables spamtrap checks if there are multiple recipients. Defaults to 'false'
+- `smtp_message`: Overrides the default SMTP reply text when an action is set. Supports `{rcpt}` templating to include the matched recipient address in the message
 
 
 Configuration example `/etc/rspamd/local.d/spamtrap.conf`:
@@ -46,8 +49,6 @@ score = 1.0;
 learn_fuzzy = true;
 learn_spam = true;
 map = file://$LOCAL_CONFDIR/local.d/maps.d/spamtrap.map;
-
-enabled = true;
 ~~~
 
 An example of a map file is:

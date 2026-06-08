@@ -52,8 +52,10 @@ rbls {
 
 ### Global parameters
 
-- `local_exclude_ip_map`: map containing additional IPv4/IPv6 addresses/subnets that should be considered private and excluded from checks where `exclude_local` is `true` (the default).
-- `url_whitelist`: map containing host names which should be skipped by URL checks.
+- `attached_maps`: list of map definitions that should be kept alive for the lifetime of the module (useful when maps are referenced from selectors or other expressions that do not hold a direct reference)
+- `disabled_rbl_suffixes_map`: map of RBL DNS zones (`rbl` values) whose rules should be skipped at runtime; allows disabling specific RBLs without editing the main configuration
+- `local_exclude_ip_map`: map containing additional IPv4/IPv6 addresses/subnets that should be considered private and excluded from checks where `exclude_local` is `true` (the default)
+- `url_whitelist`: map containing host names which should be skipped by URL checks (applied to all rules that perform URL/email/DKIM/replyto checks unless a rule sets `ignore_url_whitelist = true`)
 
 ### RBL-specific parameters
 
@@ -88,22 +90,31 @@ Optional parameters (and their defaults if applicable) are as follows:
 
 - `dkim_domainonly` (true) - lookup eSLD associated with DKIM signature rather than full label
 - `dkim_match_from` (false) - only check DKIM signatures matching the `From` header
+- `emails_delimiter` - delimiter used when constructing the lookup key for full email address checks (default: `.`; when `hash` is set, defaults to `@`)
 - `emails_domainonly` (false) - lookup domain of address instead of full address
 - `enabled` (true) - allow for disabling of RBLs
+- `exclude_checks` - list of check types to explicitly disable for this rule (subset of the values valid for `checks`)
 - `exclude_local` (true) - do not check messages from private IPs against this RBL (for `received` check: do not check private IPs at all)
 - `exclude_users` (false) - do not check this RBL if sender is an authenticated user
 - `hash` - valid for `helo` and `emails` RBL types - lookup hashes instead of literal strings. Possible values for this parameter are `sha1`, `sha256`, `sha384`, `sha512`, `md5`, `blake2`, or any other value for the default hashing algorithm.
 - `hash_format` - encoding to use for hash: `hex`, `base32` or `base64`
 - `hash_len` - truncate the hash to specified number of characters
-- `ignore_whitelist` (false) - allow whitelists to neutralise this RBL
+- `ignore_url_whitelist` (false) - do not apply the global or per-rule URL whitelist to this RBL
+- `ignore_whitelist` (false) - when set to `true`, whitelist results are ignored for this RBL (i.e. the RBL is checked even if the sender is whitelisted)
 - `images` (false) - whether image URLs should be checked by `urls` check
 - `ipv4` (true) - if IPv4 addresses should be checked
 - `ipv6` (true) - if IPv6 addresses should be checked
+- `is_empty` (false) - allow this RBL to run on empty (no body) messages
 - `is_whitelist` (false) - denotes that this RBL is an whitelist
 - `local_exclude_ip_map` - map containing IPv4/IPv6 addresses/subnets which should be considered private (and treated as local by `exclude_local`)
 - `monitored_address` (`1.0.0.127`) - fixed address to check for absence; see section on monitoring for more information
 - `no_ip` (false) - do not look up IP addresses in this RBL
-- `requests_limit` (9999) - maximum number of entities extracted by URL checks
+- `received_flags` - only check `Received` headers that have all of the listed flags set (e.g. `["authenticated"]`)
+- `received_nflags` - only check `Received` headers that do not have any of the listed flags set
+- `received_min_pos` - minimum position in the `Received` chain to check (1 = first hop); negative values count from the end (`-1` = last hop)
+- `received_max_pos` - maximum position in the `Received` chain to check; negative values count from the end
+- `requests_limit` - maximum number of entities extracted by URL/email checks; when not set, defaults to the value of `rspamd_config:get_dns_max_requests()`
+- `require_symbols` - only perform this RBL check if all of the listed symbols are already present in the task
 - `resolve_ip` - resolve the domain to IP address
 - `returnbits` - dictionary of symbols mapped to bit positions; if the bit in the specified position is set the symbol will be returned
 - `returncodes` - dictionary of symbols mapped to lua patterns; if result returned by the RBL matches the pattern the symbol will be returned
@@ -111,6 +122,8 @@ Optional parameters (and their defaults if applicable) are as follows:
 - `selector_flatten` (true) - when disabled will lookup result of chained selector as a single label without any separator
 - `selector` - one or more selectors producing data to look up in this RBL; see section on selectors for more information
 - `unknown` (false) - yield default symbol if `returncodes` or `returnbits` is specified and RBL returns unrecognised result
+- `url_full_hostname` (false) - use the full hostname instead of the registered domain (eSLD) for URL and DKIM lookups
+- `url_whitelist` - per-rule map of hostnames to exclude from URL-based checks for this RBL (overrides the global `url_whitelist`)
 - `whitelist_exception` - for whitelists; list of symbols which will not act as whitelists
 - `ignore_defaults` (false) - ignore default settings for this RBL (useful for custom configurations)
 - `disable_monitoring` (false) - disable monitoring for this RBL
@@ -333,7 +346,7 @@ rbls {
 }
 ~~~
 
-Each list should have a `suffix` parameter that defines the list itself, and optionally, some replies processing logic either by `returnbits` or `returncodes` sections.
+Each list should have an `rbl` parameter that defines the DNS zone for the list, and optionally, some replies processing logic either by `returnbits` or `returncodes` sections.
 
 As some URL lists do not accept `IP` addresses, it is possible to disable the sending of URLs with IP addresses in the host to such lists. This can be done by specifying the `no_ip = true` option.
 
@@ -457,7 +470,7 @@ To define a specific map for these rules, the following syntax can be used:
 # local.d/rbl.conf
 rules {
   EXAMPLE_RBL = {
-      suffix = "example.url.bl.com";
+      rbl = "example.url.bl.com";
       url_compose_map = "${CONFDIR}/maps.d/url_compose_map.list";
       checks = ['emails', 'dkim', 'urls'];
       emails_domainonly = true;

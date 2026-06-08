@@ -24,6 +24,8 @@ The module registers the following symbols:
 | `ARC_ALLOW_TRUSTED` | -2.0 | Valid ARC chain from a trusted forwarder (requires `whitelisted_signers_map`) |
 | `ARC_SIGNED` | 0.0 | Message was signed with ARC |
 
+`ARC_CALLBACK` is also registered as a virtual compatibility alias (type `virtual,skip`) pointing to the same internal callback as `ARC_CHECK`. It carries no score and exists only for backward compatibility with configurations that reference the old symbol name.
+
 ## Configuration
 
 Settings should be added to `/etc/rspamd/local.d/arc.conf`.
@@ -110,6 +112,7 @@ Settings should be added to `/etc/rspamd/local.d/arc.conf`.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `reuse_auth_results` | boolean | `false` | Reuse existing Authentication-Results header instead of generating new one |
+| `trusted_authserv_id` | string | `nil` | When `reuse_auth_results` is enabled, only accept an Authentication-Results header whose authserv-id matches this value; if no matching header is found, Rspamd falls back to generating a new one. Leave unset to accept the first available header. |
 
 ### HTTP headers (for proxy integration)
 

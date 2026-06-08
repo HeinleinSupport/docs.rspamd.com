@@ -21,7 +21,7 @@ The `milter headers` module offers several routines for adding/removing common h
 
 # Options
 
-# Add "extended Rspamd headers" (default false) (enables x-spamd-result, x-rspamd-server & x-rspamd-queue-id routines)
+# Add "extended Rspamd headers" (default false) (enables x-spamd-result, x-rspamd-server, x-rspamd-queue-id & x-rspamd-action routines)
 # extended_spam_headers = true;
 
 # List of routines to enable for authenticated users (default empty); see also `skip_authenticated`
@@ -57,7 +57,7 @@ custom {
 
 ### extended_spam_headers
 
-Add "extended Rspamd headers" to messages [NOT originated from authenticated users or `our_networks`](#scan-results-exposure-prevention) (default `false`). Enables the following routines: `x-spamd-result`, `x-rspamd-server` and `x-rspamd-queue-id`. 
+Add "extended Rspamd headers" to messages [NOT originated from authenticated users or `our_networks`](#scan-results-exposure-prevention) (default `false`). Enables the following routines: `x-spamd-result`, `x-rspamd-server`, `x-rspamd-queue-id` and `x-rspamd-action`.
 
 ~~~hcl
 extended_spam_headers = true;
@@ -174,8 +174,8 @@ routines {
   authentication-results {
     # Name of header
     header = "Authentication-Results";
-    # Remove existing headers
-    remove = 1;
+    # Remove existing headers (default 0 — remove all)
+    remove = 0;
     # Allows selective removal of Authentication-Results headers by hostname (3.14.2+)
     # Supports single hostname, array of hostnames, domain patterns (`.example.com`), or map files
     # remove_ar_from = ["example.com", ".example.net"];
@@ -322,6 +322,36 @@ routines {
 }
 ~~~
 
+### x-rspamd-action
+
+Adds a header containing the action Rspamd has assigned to the message (e.g. `no action`, `add header`, `reject`). Subject to the same [scan results exposure prevention](#scan-results-exposure-prevention) checks as the other extended headers.
+
+~~~hcl
+use = ["x-rspamd-action"];
+
+routines {
+  x-rspamd-action {
+    header = 'X-Rspamd-Action';
+    remove = 0;
+  }
+}
+~~~
+
+### x-rspamd-pre-result
+
+Adds a header describing any pre-result override that was applied to the message (e.g. by the `force_actions` module). The header includes the overriding action, the module that set it, and the human-readable message. The header is only written when a pre-result is actually present; no header is added for ordinary messages. This routine is activated implicitly by `x-spamd-result` and does not need to be listed separately in `use` unless `x-spamd-result` is not active.
+
+~~~hcl
+use = ["x-rspamd-pre-result"];
+
+routines {
+  x-rspamd-pre-result {
+    header = 'X-Rspamd-Pre-Result';
+    remove = 0;
+  }
+}
+~~~
+
 ### x-spamd-result (1.5.8+)
 
 Adds a header containing the scan results [if the message is NOT originated from authenticated users or `our_networks`](#scan-results-exposure-prevention).
@@ -334,6 +364,7 @@ routines {
     header = 'X-Spamd-Result';
     remove = 0;
     sort_by = 'score'; # or 'name' to sort symbols alphabetically
+    stop_chars = ' '; # character(s) used as fold points when wrapping the header value (default ' ')
   }
 }
 ~~~
@@ -380,7 +411,7 @@ Another visual indicator of spam level- SpamAssassin style.
 use = ["x-spam-level"];
 
 routines {
-  x-spamd-level {
+  x-spam-level {
     header = "X-Spam-Level";
     char = "*";
     remove = 0;
@@ -472,7 +503,7 @@ EOD;
 
 ## Scan results exposure prevention
 
-To avoid exposing scan results in outbound email, the extended Rspamd headers routines (`x-spamd-result`, `x-rspamd-server` and `x-rspamd-queue-id`) only add headers if the message is **NOT** originated from authenticated users or `our_networks`.
+To avoid exposing scan results in outbound email, the extended Rspamd headers routines (`x-spamd-result`, `x-rspamd-server`, `x-rspamd-queue-id` and `x-rspamd-action`) only add headers if the message is **NOT** originated from authenticated users or `our_networks`.
 
 If desired, the [`extended_headers_rcpt`](#extended_headers_rcpt-162) option can be used to include the extended Rspamd headers in messages sent to specific recipients or domains, such as a list of domains the mail server is responsible for.
 

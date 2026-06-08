@@ -37,8 +37,8 @@ symbol = "P0F";
 patterns = {
   WINDOWS = "^Windows.*";
   LINUX = "^Linux.*";
-  # DSL = "^DSL$";
-  # DISTANCE10 = "^distance:10$";
+  # DSL = "^link=DSL$";
+  # DISTANCE10 = "^distance=10$";
 }
 
 # Cache lifetime in seconds (default - 2 hours)
@@ -56,7 +56,9 @@ prefix = "p0f";
 | `socket` | required | Path to the p0f Unix socket |
 | `timeout` | 5s | Connection timeout |
 | `symbol` | `P0F` | Symbol to insert with OS fingerprint results |
+| `symbol_fail` | `P0F_FAIL` | Symbol inserted when the p0f scan fails |
 | `patterns` | {} | Map of symbol names to regex patterns for matching p0f results |
+| `message` | `${SCANNER}: fingerprint matched: "${VIRUS}"` | Log/result message template on a match |
 | `expire` | 7200 | Cache lifetime in seconds |
 | `prefix` | `p0f` | Redis cache key prefix |
 
@@ -65,8 +67,8 @@ prefix = "p0f";
 The `patterns` option allows you to define custom symbols that fire when the p0f result matches a specific pattern. Patterns can match against:
 
 - Operating system name (e.g., `Windows`, `Linux`)
-- Link type (e.g., `DSL`, `Ethernet`)
-- Network distance (e.g., `distance:10`)
+- Link type, prefixed with `link=` (e.g., `^link=DSL$`, `^link=Ethernet$`)
+- Network distance, prefixed with `distance=` (e.g., `^distance=10$`)
 
 ## Symbols
 
@@ -74,6 +76,7 @@ The module registers the following symbols:
 
 - `P0F_CHECK` - callback symbol (internal)
 - `P0F` - virtual symbol containing OS fingerprint (if `symbol` is set)
+- `P0F_FAIL` - virtual symbol set when the p0f scan fails (configurable via `symbol_fail`)
 - Custom pattern symbols as defined in `patterns` configuration
 
 ## Redis caching

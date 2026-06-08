@@ -85,6 +85,13 @@ Below are the configuration parameters for DMARC reporting, along with correspon
     msgid_from = 'rspamd'; # Msgid format
     max_entries = 1k; # Maximum amount of entries per domain
     keys_expire = 2d; # Expire date for Redis keys
+    retries = 2; # Number of retries for SMTP delivery of reports
+    # Redis key layout (optional, shown with defaults)
+    #redis_keys {
+    #  index_prefix = "dmarc_idx"; # Prefix for the per-day index key
+    #  report_prefix = "dmarc_rpt"; # Prefix for per-domain report keys
+    #  join_char = ";"; # Character used to join key components
+    #}
     #only_domains = '/path/to/map'; # Only store reports from domains or eSLDs listed in this map
     # Available from 3.3
     #exclude_domains = '/path/to/map'; # Exclude reports from domains or eSLDs listed in this map
@@ -113,6 +120,11 @@ Here is the list of options explained:
 * `msgid_from` (Optional): The message ID format used in SMTP messages.
 * `max_entries` (Optional): The maximum number of entries allowed per domain in the DMARC report.
 * `keys_expire` (Optional): The expiration time for Redis keys storing report data.
+* `retries` (Optional, default `2`): Number of SMTP delivery attempts when sending a report.
+* `redis_keys` (Optional): Sub-table that controls the layout of Redis keys used to store report data. Available sub-keys:
+  * `index_prefix` (default `"dmarc_idx"`): Prefix for the per-day index key that tracks which report keys exist.
+  * `report_prefix` (default `"dmarc_rpt"`): Prefix for per-domain report sorted-set keys.
+  * `join_char` (default `";"`): Character used to join key components when constructing key names.
 * `only_domains` (Optional): A path to a map file containing a list of domains or eSLDs for which reports should be stored. Reports from other domains will be ignored.
 * `exclude_domains` (Optional): A path to a map file containing a list of domains or eSLDs to be excluded from the reports. Alternatively, an array of domains can be used for the same purpose.
 * `exclude_recipients` (Optional): A path to a map file containing a list of local recipients to not send reports for. Alternatively, an array of local recipients can be used for the same purpose.
@@ -130,7 +142,7 @@ Rspamd does not support sending `forensic` DMARC reports.
 
 ## DMARC Munging
 
-Starting from version 3.0, Rspamd supports DMARC munging for mailing lists. In this mode, Rspamd will modify the `From:` header of messages with a **valid** DMARC policy of **reject/quarantine** to a pre-defined address (such as a mailing list address) to prevent delivery failure during mailing list forwarding.
+Starting from version 3.0, Rspamd supports DMARC munging for mailing lists. In this mode, Rspamd will modify the `From:` header of messages that pass DMARC alignment (i.e. have the `DMARC_POLICY_ALLOW` symbol) to a pre-defined address (such as a mailing list address) to prevent delivery failure during mailing list forwarding. This is the default behaviour controlled by `mitigate_allow_only = true`. When `mitigate_allow_only` is set to `false`, munging is attempted for any message that has a DMARC result (allow, quarantine, reject, or softfail). The secondary gate `mitigate_strict_only = false` (default) means that, when enabled, munging is further restricted to messages whose `DMARC_POLICY_ALLOW` symbol carries a `reject` or `quarantine` policy option.
 An example of this technique is [documented](https://mailman.readthedocs.io/en/release-3.1/src/mailman/handlers/docs/dmarc-mitigations.html) for the Mailman mailing list management system.
 
 There is a configuration example below that demonstrates how to set up DMARC munging in Rspamd:

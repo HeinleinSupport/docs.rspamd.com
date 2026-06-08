@@ -8,13 +8,13 @@ This module is intended to do simple checks for mail with one `Received` header.
 
 ## Configuration
 
-Configuring this module is quite straightforward: you simply need to define a `symbol` for generic emails with only one received header, specify a `symbol_strict` for emails that exhibit negative patterns or have unresolved hostnames, and include **good** and **bad** patterns, which can utilise [lua patterns](http://lua-users.org/wiki/PatternsTutorial). Use `good_host` lines to exclude certain hosts from this module, and `bad_host` lines to identify specific negative patterns. Additionally, you can create a `whitelist` to define a list of networks for which the `once_received` checks should be excluded.
+The module is **disabled by default** and does nothing unless `symbol` is explicitly set in configuration — all other options are only read when `symbol` is present. To enable it, define a `symbol` for generic emails with only one received header, optionally specify a `symbol_strict` for emails that exhibit negative patterns or have unresolved hostnames, and include **good** and **bad** patterns, which can utilise [lua patterns](http://lua-users.org/wiki/PatternsTutorial). Use `good_host` to exclude certain hosts from this module, and `bad_host` to identify specific negative patterns. Additionally, you can create a `whitelist` to define a list of networks for which the checks should be excluded.
 
 ### Configuration options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `symbol` | `ONCE_RECEIVED` | Symbol for messages with only one received header |
+| `symbol` | (none — module is inactive without this) | Symbol for messages with only one received header; **must be set to enable the module** |
 | `symbol_strict` | nil | Symbol for messages matching bad patterns or unresolved hostnames |
 | `symbol_mx` | `DIRECT_TO_MX` | Symbol for direct MUA to MX connections (detected via User-Agent/X-Mailer) |
 | `good_host` | - | Lua pattern for hostnames to exclude from checks |
@@ -27,11 +27,10 @@ Configuring this module is quite straightforward: you simply need to define a `s
 
 ~~~hcl
 once_received {
-    good_host = "^mail";
-    bad_host = "static";
-    bad_host = "dynamic";
-    symbol_strict = "ONCE_RECEIVED_STRICT";
     symbol = "ONCE_RECEIVED";
+    symbol_strict = "ONCE_RECEIVED_STRICT";
+    good_host = "^mail";
+    bad_host = ["static", "dynamic"];
     whitelist = "/tmp/ip.map";
 }
 ~~~

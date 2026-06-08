@@ -160,10 +160,13 @@ Optional map configuration attributes:
 * `prefilter` - defines if the map is used in [prefilter mode](#pre-filter-maps)
 * `action` - for prefilter maps defines action set by map match
 * `regexp` - set to `true` if your map contain [regular expressions](#regexp-maps)
+* `glob` - set to `true` to treat map entries as glob patterns (analogous to `regexp = true` but for globs); if combined with `multi = true`, all matching globs are reported
 * `symbols` - array of symbols that this map can insert (for key-value pairs), [learn more](#multiple-symbol-maps). Please bear in mind, that if you define this attribute, your map must have entries in form `key<spaces>value` to match a specific symbol.
+* `disable_multisymbol` - if set to `true`, ignore any symbol names embedded in map values and always insert the rule's own symbol (useful when you want the map to provide only options/score but not override the symbol name)
 * `score` - score of the symbol (can be redefined in the `metric` section)
 * `description` - map description
 * `message` - message returned to MTA on prefilter reject action being triggered
+* `message_func` - a string containing a Lua function body that is evaluated once at load time and called as `function(task, symbol, matched_value)` to produce a custom pre-result message; if it returns a non-nil value that string is used instead of the default `"Matched map: <symbol>"` message. Example: `message_func = "return function(task, sym, val) return 'Blocked: ' .. tostring(val) end"`
 * `group` - group for the symbol (can be redefined in `metric`)
 * `require_symbols` - expression of symbols that have to match for a specific message: [learn more](#conditional-maps)
 * `filter` - match specific part of the input (for example, email domain): [here](#map-filters) is the complete definition of maps filters
@@ -172,7 +175,7 @@ Optional map configuration attributes:
 * `one_shot` - if set to `true`, only the first match will be scored (useful with `multi` or content maps)
 * `multi` - if set to `true`, match all possible entries in the map rather than stopping at the first match
 * `skip_detected` - for `filename` type maps, skip checking detected file extensions (default: false)
-* `skip_archives` - for `filename` type maps, skip checking files inside archives (default: false)
+* `skip_archives` - for `filename` type maps, skip checking filenames inside archives (default: false; by default archive contents **are** checked)
 
 When using header maps, it is essential to specify the exact `header` by utilizing the header option.
 
@@ -283,7 +286,7 @@ Type attribute means what is matched with this map. The following types are supp
 | `content` | matches specific content of a message (e.g. headers, body or even a full message) against some map, usually regular expressions map
 | `country` | matches country code of AS passed by [ASN module](/modules/asn)
 | `dnsbl` | matches IP of the host that performed message handoff against some DNS blacklist (consider using [RBL](/modules/rbl) module for this)
-| `filename` | matches attachment filenames and filenames in archives against map. It also includes detected filename match from version 2.0. For example, if some attachment has `.png` extension but it has real type detected as `image/jpeg` then two checks would be performed: for the original attachment and for the detected one. This does not include files in archives as Rspamd does not extract them.
+| `filename` | matches attachment filenames against map, including filenames inside archives (use `skip_archives = true` to disable archive checking). It also includes detected filename match from version 2.0. For example, if some attachment has `.png` extension but its real type is detected as `image/jpeg` then two checks are performed: for the original attachment and for the detected one.
 | `from` | matches **envelope** from (or header `From` if envelope from is absent)
 | `header` | matches any header specified (must have `header = "Header-Name"` configuration attribute)
 | `helo` | matches HELO of the message handoff session
@@ -449,7 +452,7 @@ For content maps, the following filters are supported:
 
 ### Filename filters
 
-Since version 2.0, Filename maps also check for detected filename matches. For instance, if an attachment has a `.png` extension, but its real type is detected as `image/jpeg`, two checks will be performed - one for the original attachment and one for the detected one. It is worth noting that Rspamd does not extract files in archives, so these files are not included in the checks.
+Since version 2.0, Filename maps also check for detected filename matches. For instance, if an attachment has a `.png` extension, but its real type is detected as `image/jpeg`, two checks will be performed - one for the original attachment and one for the detected one. Filenames inside archives are also checked by default; set `skip_archives = true` to disable this behaviour.
 
 Filename maps support the following set of filters:
 
@@ -511,6 +514,7 @@ Negative values can be specified to match positions relative to the end of Recei
 
 * `flags` - One of more flags which MUST be present to match
 * `nflags` - One or more flags which must NOT be present to match
+* `artificial` - if set to `true`, include artificial Received headers (those synthesised internally by Rspamd) in matching; by default artificial headers are excluded
 
 Currently available flags are `ssl` (hop used SSL) and `authenticated` (hop used SMTP authentication).
 

@@ -21,8 +21,8 @@ By default, no cache servers are specified in the configuration, meaning that th
 `Ratelimit` module supports the following configuration options:
 
 - `servers` - list of servers where ratelimit data is stored; [global settings](/configuration/redis) used if not set
-- `symbol` - if this option is specified, then `ratelimit` plugin just adds the corresponding symbol instead of setting pre-result, the value is scaled as $$ 2 * tanh(\frac{bucket}{threshold * 2}) $$, where `tanh` is the hyperbolic tangent function
-- `info_symbol` (1.7.0+) - if this option is specified the corresponding symbol is inserted *in addition to* setting pre-result.
+- `symbol` - if this option is specified, then `ratelimit` plugin inserts the corresponding symbol with a fixed weight of `1.0` instead of setting a pre-result (soft reject)
+- `info_symbol` (1.7.0+) - if this option is specified, the corresponding symbol is inserted when a limit is exceeded and *neither* a per-bucket `symbol` nor the top-level `symbol` option is set; it is a fallback, not additive
 - `whitelisted_rcpts` - comma separated list of whitelisted recipients. By default
 the value of this option is 'postmaster, mailer-daemon'. Supported entries are:
     * user part of the address
@@ -31,14 +31,18 @@ the value of this option is 'postmaster, mailer-daemon'. Supported entries are:
 - `whitelisted_user` - a map of usernames which are excluded from user ratelimits
 - `expire` - maximum lifetime for any limit bucket (2 days by default)
 - `prefix` - Redis key prefix (default: 'RL')
+- `bounce_senders` - list of envelope sender values treated as bounce senders (default: `{'postmaster', 'mailer-daemon', '', 'null', 'fetchmail-daemon', 'mdaemon'}`)
+- `lfb_cache_prefix` - Redis key prefix used for the last-filled-bucket cache (default: `'RL_cache_prefix'`)
+- `lfb_max_cache_size` - maximum number of entries kept in the last-filled-bucket cache per Redis node (default: `30`)
+- `message_func` - a Lua function body (as a string) that overrides the default soft-reject message; the function receives `(task, limit_type, prefix, bucket, limit_key)` and must return a string
 - `prefilter` - run in prefilter stage (default: true)
 - `dynamic_rate_limit` (3.9.0+) - enable dynamic ratelimit multipliers (default: false)
 - `ham_factor_rate` - multiplier for rate when a ham message arrives (default: 1.01)
 - `spam_factor_rate` - multiplier for rate when a spam message arrives (default: 0.99)
 - `ham_factor_burst` - multiplier for burst when a ham message arrives (default: 1.02)
 - `spam_factor_burst` - multiplier for burst when a spam message arrives (default: 0.98)
-- `max_rate_mult` - maximum and minimum (1/X) dynamic multiplier for rate (default: 5)
-- `max_bucket_mult` -  maximum and minimum (1/X) dynamic multiplier for rate (default: 10)
+- `max_rate_mult` - maximum and minimum (1/X) dynamic multiplier for the token replenishment rate (default: 5)
+- `max_bucket_mult` - maximum and minimum (1/X) dynamic multiplier for the bucket/burst capacity (default: 10)
 - `allow_local` - a boolean that enables rate-limiting of local requests from rspamc or controller, including WebUI (default: false)
 - `rates` - a table of allowed rates in several forms
 

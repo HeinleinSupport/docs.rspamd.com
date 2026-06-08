@@ -43,6 +43,7 @@ All scanner types support these common options:
 | `max_size` | number | (none) | Skip scanning for messages larger than this (bytes) |
 | `min_size` | number | (none) | Skip scanning for messages smaller than this (bytes) |
 | `scan_mime_parts` | boolean | `true` | Scan attachments separately instead of whole message |
+| `attachments_only` | boolean | (none) | **Deprecated.** Alias for `scan_mime_parts`; emits a warning and maps to `scan_mime_parts`. Use `scan_mime_parts` instead. |
 | `scan_text_mime` | boolean | `false` | Include text parts when scanning mime parts |
 | `scan_image_mime` | boolean | `false` | Include image parts when scanning mime parts |
 | `log_clean` | boolean | `false` | Log messages when content is clean |
@@ -52,7 +53,7 @@ All scanner types support these common options:
 | `patterns` | table | (none) | Regex patterns to map virus names to custom symbols |
 | `patterns_fail` | table | (none) | Regex patterns to map error messages to custom symbols |
 | `prefix` | string | (auto) | Redis cache key prefix |
-| `cache_expire` | number | 3600 | Redis cache expiration time in seconds |
+| `cache_expire` | number | 3600 (7200 for virustotal, metadefender, kaspersky_se) | Redis cache expiration time in seconds |
 | `no_cache` | boolean | `false` | Disable Redis caching |
 | `dynamic_scan` | boolean | `false` | Skip scanning if message already exceeds 2x reject threshold |
 | `text_part_min_words` | number | (none) | Minimum words required in text parts to scan |
@@ -187,6 +188,7 @@ SAVAPI is Avira's scanning interface. By default, it uses a Unix socket, but TCP
 **Scanner-specific defaults:**
 - `default_port`: 4444
 - `timeout`: 15.0 seconds
+- `tmpdir`: `/tmp` (temporary files are written here before scanning)
 
 **Important:** You must set `product_id` to match your HBEDV.key file ID.
 
@@ -230,9 +232,19 @@ usermod -G klusers _rspamd
 
 Kaspersky Scan Engine uses HTTP REST API version 1.0 ([documentation](https://help.kaspersky.com/ScanEngine/1.0/en-US/181038.htm)). It supports both TCP stream and file modes.
 
+**Scanner-specific defaults:**
+- `default_port`: 9999
+- `timeout`: 5.0 seconds
+- `retransmits`: 1
+- `cache_expire`: 7200 seconds
+- `tmpdir`: `/tmp` (used only when `use_files = true`)
+- `keepalive`: `true`
+
 **Scanner-specific options:**
-- `use_files`: Set to `true` to use file mode (only recommended with fast tmpfs storage)
+- `use_files`: Set to `true` to use file mode (only recommended with fast tmpfs storage). When enabled, Rspamd writes content to `tmpdir` before scanning.
 - `use_https`: Set to `true` to enable SSL
+- `auth_string`: Optional HTTP `Authorization` header value sent with every scan request (e.g. for token-based authentication)
+- `keepalive`: Whether to use HTTP keep-alive connections (default: `true`)
 
 ~~~hcl
 # local.d/antivirus.conf
@@ -240,12 +252,13 @@ Kaspersky Scan Engine uses HTTP REST API version 1.0 ([documentation](https://he
 kaspersky_se {
   symbol = "KAS_SE_VIRUS";
   type = "kaspersky_se";
-  servers = "127.0.0.1:1234";  # Required, Unix sockets not supported
+  servers = "127.0.0.1:9999";  # Required, Unix sockets not supported
   max_size = 2048000;
   timeout = 5.0;
   scan_mime_parts = true;
   use_files = false;  # Use TCP stream mode (recommended)
   use_https = false;  # Enable for SSL
+  # auth_string = "Bearer mytoken";  # Optional authorization header
 }
 ~~~
 
@@ -330,11 +343,14 @@ virustotal {
 }
 ~~~
 
-**Note:** VirusTotal has rate limits on their API. Consider `cache_expire` settings to minimize API calls.
+**Note:** VirusTotal has rate limits on their API. The default `cache_expire` for this scanner is 7200 seconds (2 hours) to help reduce API calls.
 
 ## MetaDefender Cloud
 
 MetaDefender Cloud by OPSWAT performs hash-based lookups (SHA256) against multiple antivirus engines. **An API key is required.**
+
+**Scanner-specific defaults:**
+- `cache_expire`: 7200 seconds
 
 **Scanner-specific options:**
 - `apikey`: Your MetaDefender API key (required)
@@ -346,10 +362,10 @@ MetaDefender Cloud by OPSWAT performs hash-based lookups (SHA256) against multip
 
 Like VirusTotal, this scanner uses hash lookups and produces category-based symbols:
 
-- `METADEFENDER_CLEAN`: No detections
-- `METADEFENDER_LOW`: Few detections
-- `METADEFENDER_MEDIUM`: Moderate detections
-- `METADEFENDER_HIGH`: Many detections
+- `METADEFENDER_CLEAN`: No detections (negative score)
+- `METADEFENDER_LOW`: Few detections (minimum_engines to low_category-1)
+- `METADEFENDER_MEDIUM`: Moderate detections (low_category to medium_category-1)
+- `METADEFENDER_HIGH`: Many detections (medium_category and above)
 
 ~~~hcl
 # local.d/antivirus.conf
@@ -363,6 +379,30 @@ metadefender {
   minimum_engines = 3;
   low_category = 5;
   medium_category = 10;
+  
+  # Custom symbols and scores
+  symbols = {
+    clean = {
+      symbol = "METADEFENDER_CLEAN";
+      score = -0.5;
+      description = "MetaDefender: attachment is clean";
+    };
+    low = {
+      symbol = "METADEFENDER_LOW";
+      score = 2.0;
+      description = "MetaDefender: low threat level";
+    };
+    medium = {
+      symbol = "METADEFENDER_MEDIUM";
+      score = 5.0;
+      description = "MetaDefender: medium threat level";
+    };
+    high = {
+      symbol = "METADEFENDER_HIGH";
+      score = 8.0;
+      description = "MetaDefender: high threat level";
+    };
+  };
 }
 ~~~
 

@@ -22,14 +22,14 @@ To configure the SPF module, you have the option to manually specify the cache s
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `enabled` | true | Enable or disable the SPF module |
-| `spf_cache_size` | 2048 | Number of elements in the cache of parsed SPF records |
-| `spf_cache_expire` | 1d | Default max expire for an element in this cache |
+| `spf_cache_size` | 2048 | Number of elements in the LRU cache of parsed SPF records |
+| `spf_cache_expire` | 1d | Carried in the default config file for reference; not currently consumed by the SPF library (cache lifetime is determined by DNS record TTL) |
 | `max_dns_nesting` | 10 | Maximum number of recursive DNS subrequests (include chain length) |
 | `max_dns_requests` | 30 | Maximum count of DNS requests per record |
 | `min_cache_ttl` | 5min | Minimum TTL enforced for all elements in SPF records |
 | `disable_ipv6` | false | Disable all IPv6 lookups |
 | `whitelist` | nil | Map of IP addresses to whitelist from checks |
+| `external_relay` | nil | Radix map of trusted relay IP addresses. When a received header's `by` IP matches an entry, the next hop's IP from the received chain is used as the SPF check source instead of the connection IP. Useful when the MTA sits behind a fixed trusted relay and the external_relay module is not applicable. |
 
 ## Symbols
 
@@ -51,15 +51,15 @@ The module produces the following symbols:
 ~~~hcl
 # local.d/spf.conf
 
-spf_cache_size = 1k; # cache up to 1000 of the most recent SPF records
-spf_cache_expire = 1d; # default max expire for an element in this cache
+spf_cache_size = 2048; # cache up to 2048 of the most recent SPF records
 max_dns_nesting = 10; # maximum number of recursive DNS subrequests
 max_dns_requests = 30; # maximum count of DNS requests per record
 min_cache_ttl = 5min; # minimum TTL enforced for all elements in SPF records
 disable_ipv6 = false; # disable all IPv6 lookups
 whitelist = "/path/to/some/file"; # whitelist IPs from checks
+# external_relay = ["192.168.1.1"]; # use IP from received headers when connection comes via this relay
 ~~~
 
 ## Using SPF with forwarding
 
-If your MTA is placed behind some trusted forwarder you can still check SPF policies for the originating domains and IP addresses. Please consider checking the [external relay](/modules/external_relay) documentation. There is a legacy option `external_relay` in SPF plugin itself but it is kept for compatibility and should not be used nowadays.
+If your MTA is placed behind some trusted forwarder you can still check SPF policies for the originating domains and IP addresses. The recommended approach is to use the dedicated [external relay](/modules/external_relay) module, which provides richer functionality. Alternatively, the `external_relay` option in the SPF plugin itself is fully functional: configure it as a list of trusted relay IPs and the SPF check will use the preceding hop's IP from the received headers instead of the connection IP.

@@ -14,17 +14,16 @@ The module examines standard list-related headers and known vendor-specific mark
 - Heuristic headers: `Precedence: list|bulk`, `X-Loop`
 - Vendor markers when present, such as `X-Mailman-Version`, `X-BeenThere`, `X-Google-Loop`, `X-Google-Group-Id`, `X-Listserver: CommuniGate Pro LIST`
 
-If evidence is strong (e.g. Mailman, ezmlm, Google Groups, CommuniGate Pro), the symbol is added with a specific result option. Otherwise, a generic option is added when enough list headers are present.
+If evidence is strong (e.g. Mailman, ezmlm, Google Groups, CommuniGate Pro), the symbol is inserted with weight **1.0** and a specific result option. Otherwise, when enough generic list headers are present (score ≥ 1 from the heuristic scan), the symbol is inserted with weight **0.5 × heuristic_score** (heuristic score is capped at 2, so the maximum inserted weight for a generic match is 1.0) and the `generic` option.
 
 ## Configuration
 
-The module works out of the box. You can optionally override the symbol name in `local.d/maillist.conf`:
+The module is **disabled by default**. It only registers its symbol and callback when `symbol` is explicitly set in configuration. To enable it, add a `symbol` entry in `local.d/maillist.conf`:
 
 ~~~hcl
 # /etc/rspamd/local.d/maillist.conf
 maillist {
-  # Optional: change the symbol name
-  #symbol = "MAILLIST";
+  symbol = "MAILLIST";
 }
 ~~~
 
@@ -41,12 +40,12 @@ symbol "MAILLIST" {
 ## Symbols and result options
 
 - `MAILLIST`: inserted when a message is detected as list mail
-  - Result options may include:
-    - `ezmlm`
-    - `mailman`
-    - `googlegroups`
-    - `cgp` (CommuniGate Pro)
-    - `generic` (sufficient list headers without a specific vendor)
+  - Result options and inserted weights:
+    - `ezmlm` — weight 1.0
+    - `mailman` — weight 1.0
+    - `googlegroups` — weight 1.0
+    - `cgp` (CommuniGate Pro) — weight 1.0
+    - `generic` (sufficient list headers without a specific vendor) — weight `0.5 × heuristic_score` (maximum 1.0)
 
 ## Supported detectors
 

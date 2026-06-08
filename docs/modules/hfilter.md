@@ -33,7 +33,7 @@ By default, checks are skipped for authenticated senders and local IPs.
 
 ## Configuration
 
-Enable or disable groups of checks in `local.d/hfilter.conf`:
+All six check groups default to **disabled** (`false`). Enable the groups you want in `local.d/hfilter.conf`:
 
 ~~~hcl
 # /etc/rspamd/local.d/hfilter.conf
@@ -43,11 +43,11 @@ hfilter {
   url_enabled = true;       # URL-only / one-line content
   from_enabled = true;      # MAIL FROM domain checks and bounce
   rcpt_enabled = true;      # recipient sanity (e.g. bounces to many rcpts)
-  mid_enabled = false;      # Message-Id domain checks
+  mid_enabled = true;       # Message-Id domain checks
 }
 ~~~
 
-Assign weights in your metrics as desired. Typical setup uses small positive weights for the granular symbols and relies on the aggregate effect:
+All symbols are registered with an effective default score of **0.0**. You must assign weights to any symbols you want to influence the final score. The example below is illustrative — choose values that suit your environment:
 
 ~~~hcl
 # /etc/rspamd/local.d/metrics.conf

@@ -9,13 +9,9 @@ The purpose of this module is to enable the storage of history in Redis lists wi
 
 ## Storage model
 
-This module stores keys as follows:
+The Redis key used to store history is built from a Jinja template. The default template is `rs_history{{HOSTNAME}}{{COMPRESS}}`, where `{{HOSTNAME}}` is replaced with the local hostname and `{{COMPRESS}}` is replaced with `_zst` when compression is enabled (or an empty string when it is not). For example, on host `example.local` with compression enabled the key becomes `rs_history_example.local_zst`.
 
-1. Get key prefix
-2. Append hostname
-3. Append `_zst` if history is compressed
-
-In addition, there is a special set where suffixes are stored, and the keyname for this set is simply `key_prefix`. For example, if there is a host `example.local` and it stores compressed history entries, it will save the following element if `key_prefix` is set: `example.local_zst`.
+The template can be customised via the `key_prefix` setting.
 
 ## Compression
 
@@ -31,10 +27,16 @@ The configuration of this module is pretty straightforward (use `local.d/history
 
 ~~~hcl
 servers = 127.0.0.1:6379; # Redis server to store history
-expire = 432000; # Expire in seconds for inactive keys, default to 5 days
+key_prefix = "rs_history{{HOSTNAME}}{{COMPRESS}}"; # Key name template
+expire = 432000; # Expire in seconds for inactive keys (no expiry by default)
 nrows = 200; # Default rows limit
 compress = true; # Use zstd compression when storing data in Redis
 subject_privacy = false; # Subject privacy is off
+subject_privacy_alg = "blake2"; # Hash algorithm used to obfuscate subjects
+subject_privacy_prefix = "obf"; # Prefix prepended to obfuscated subjects
+subject_privacy_length = 16; # Number of hash characters kept after truncation
 ~~~
+
+**Note:** `expire` has no default — keys are kept indefinitely unless this option is set. The value `432000` (5 days) shown above is an example only.
 
 **Note:** Reducing the `expire` value can result in a one-time situation where newer entries are deleted before older ones, creating a gap in the middle of the history.

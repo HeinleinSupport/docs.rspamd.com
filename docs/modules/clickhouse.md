@@ -168,6 +168,10 @@ spf_na_symbols = ["R_SPF_NA"];
 # Symbols that prevent ClickHouse logging when present
 stop_symbols = [];
 
+# Restrict logging to senders whose envelope-From domain matches this regexp map.
+# When set, only messages from matching domains are stored. Unset by default.
+# from_tables = "/etc/rspamd/clickhouse_from_domains.map";
+
 # Map expressions to skip certain messages
 # exceptions = {
 #   symbol_options = {
@@ -188,9 +192,11 @@ retention {
   # Enable retention (default: false)
   enable = true;
   
-  # Method: "drop" or "detach"
+  # Method: "drop" or "detach" (default: "detach")
+  # "detach" keeps the partition on disk but removes it from query results;
+  # "drop" permanently deletes the data.
   # See: https://clickhouse.com/docs/en/sql-reference/statements/alter/partition
-  method = "drop";
+  method = "detach";
   
   # Keep data for this many months
   period_months = 3;
@@ -199,6 +205,22 @@ retention {
   run_every = 7d;
 }
 ~~~
+
+### Extra column presets
+
+Instead of (or in addition to) defining `extra_columns` by hand, you can select a named preset that injects a curated set of columns:
+
+~~~hcl
+# local.d/clickhouse.conf
+
+# Named preset to inject curated extra_columns.
+# Currently supported value: "outbound"
+# (adds Languages, ReceivedCount, FuzzyDigest columns for per-sender traffic profiling)
+# Default: not set
+preset = "outbound";
+~~~
+
+User-supplied `extra_columns` entries whose name matches a preset column take precedence over the preset value, so you can override individual columns freely. The preset columns are added to `extra_columns` before the normal selector-compilation step, meaning schema migration and ALTER TABLE handling work through the same path as hand-configured columns.
 
 ### Extra columns
 

@@ -25,7 +25,7 @@ Here is an example of full module configuration.
 
 ~~~hcl
 phishing {
-	symbol = "R_PHISHING"; # Default symbol
+	symbol = "PHISHED_URL"; # Default symbol
 
 	# Check only domains from this list
 	domains = "file:///path/to/map";
@@ -70,6 +70,40 @@ phishing {
 }
 ~~~
 
+## Options
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `symbol` | string | `PHISHED_URL` | Symbol inserted when a phished URL is detected |
+| `domains` | map | — | When set, only emit `symbol` when the phished domain appears in this map |
+| `exceptions` | map table | — | Per-symbol maps for anchor/redirector exceptions; matching URL skips further checks |
+| `phishing_exceptions` | map table | — | Per-symbol maps for known-phishing exceptions; matching phished domain skips further checks |
+| `strict_domains` | map table | — | Per-symbol maps; matching domains always fire at full weight |
+| `openphish_enabled` | boolean | `false` | Enable the OpenPhish URL feed |
+| `openphish_map` | URL/path | `https://raw.githubusercontent.com/openphish/public_feed/refs/heads/main/feed.txt` | URL or path for the OpenPhish plain-text feed |
+| `openphish_url` | URL/path | — | Alias for `openphish_map` |
+| `openphish_premium` | boolean | `false` | Set to `true` when using an OpenPhish premium JSON feed |
+| `phishtank_enabled` | boolean | `false` | Enable Phishtank DNS lookups |
+| `phishtank_suffix` | string | `phishtank.rspamd.com` | DNS zone used for Phishtank lookups |
+| `generic_service_enabled` | boolean | `false` | Enable a custom generic phishing feed |
+| `generic_service_map` | URL/path | — | URL or path for the generic feed data |
+| `generic_service_url` | URL/path | — | Alias for `generic_service_map` |
+| `generic_service_name` | string | `generic service` | Human-readable name for the generic service (used in log messages) |
+| `generic_service_symbol` | string | `PHISHED_GENERIC_SERVICE` | Symbol inserted when a URL matches the generic feed |
+| `phishing_feed_exclusion_enabled` | boolean | `false` | Enable per-host exclusions from all phishing feeds |
+| `phishing_feed_exclusion_map` | URL/path | — | URL or path to the exclusion map (plain hostname list, no scheme/path) |
+| `phishing_feed_exclusion_symbol` | string | `PHISHED_EXCLUDED` | Symbol inserted when a URL's host is found in the exclusion map |
+
+## Symbols
+
+| Symbol | Description |
+|---|---|
+| `PHISHED_URL` | Default symbol — a phished URL was detected |
+| `PHISHED_OPENPHISH` | URL matched the OpenPhish feed |
+| `PHISHED_PHISHTANK` | URL matched the Phishtank DNS feed |
+| `PHISHED_GENERIC_SERVICE` | URL matched the generic service feed (default; overridden by `generic_service_symbol`) |
+| `PHISHED_EXCLUDED` | URL host found in the phishing feed exclusion map (default; overridden by `phishing_feed_exclusion_symbol`) |
+
 ## Openphish support
 
 Starting from version 1.3, Rspamd provides support for [openphish](https://openphish.com)  This public feed can be loaded as a map in Rspamd using HTTPS and utilized to check URLs in messages against the openphish list. In case of any match, Rspamd adds the symbol `PHISHED_OPENPHISH`.
@@ -94,11 +128,11 @@ phishing {
 
 ## Phishtank support
 
-Rspamd has included support for [phishtank](https://phishtank.com) since version 1.3. Starting from version 1.8, phishtank is enabled by default in the stock configuration, and queries the phishtank.rspamd.com via DNS. If you wish to disable the phishtank feed, you can modify the `local.d/phishing.conf` file by adding the following lines:
+Rspamd has included support for [phishtank](https://phishtank.com) since version 1.3. The module default is `phishtank_enabled = false`; the stock Rspamd configuration may enable it separately via `phishtank.rspamd.com` DNS. To enable or disable Phishtank lookups in your local configuration:
 
 ~~~hcl
 # local.d/phishing.conf
-phishtank_enabled = false
+phishtank_enabled = true;  # set to false to disable
 ~~~
 
 You can also use your own phishtank DNS zone:

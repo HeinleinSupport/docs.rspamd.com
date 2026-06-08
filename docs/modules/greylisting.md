@@ -40,7 +40,8 @@ To use the greylisting module, you must first set up a Redis server to store has
 * **`key_prefix`**: prefix for hashes to store in Redis (`rg` by default)
 * **`max_data_len`**: maximum length of data to be used for body hash (10kB by default)
 * **`message`**: a message for temporary rejection reason (`Try again later` by default)
-* **`message_func`**: Lua function to generate custom rejection message; receives `task` and `end_time` as arguments
+* **`message_func`**: a string containing a Lua function expression used to generate a custom rejection message; the string is loaded via `load()` and must evaluate to a function receiving `(task, end_time)` as arguments (e.g. `"function(task, end_time) return 'Try again after ' .. end_time end"`)
+* **`redis_timeout`**: timeout in seconds for Redis connections (1.0 by default); distinct from the greylisting `timeout`
 * **`symbol`**: symbol name to insert on greylisting (`GREYLIST` by default)
 * **`action`**: action to apply when greylisting (`soft reject` by default; use `greylist` for Exim)
 * **`whitelisted_ip`**: map of IP addresses and/or subnets to skip greylisting for

@@ -2,119 +2,16 @@
 title: IP Score module
 ---
 
-
 # IP Score
 
-# Deprecation warning!
+:::warning Module removed in Rspamd 2.0
+This module has been removed. The implementation file is a tombstone — configuring `ip_score` has no effect.
 
-This module is deprecated and is removed from Rspamd 2.0 due to several serious design flaws, e.g. reputation tokens had no decay leading to a situation with a positive loopback link and thus incorrect reputation calculations. 
-The existing configuration could be automatically transferred to [reputation module](/modules/reputation).
-Unfortunately, the existing reputation built cannot be transferred for many reasons. One of the reasons is that it was simply wrong in many cases.
+The module was retired due to serious design flaws: reputation tokens had no decay, which led to a positive-feedback loop and incorrect reputation calculations.
+:::
 
-### Theory of operation
+## Migration
 
-IP Score tracks the number of messages received from a given IP/subnet/ASN/country and records this alongside a total score. The scores which are added to these total scores are calculated as follows:
+Use the [reputation module](/modules/reputation) instead. It provides equivalent IP, subnet, ASN, and country reputation tracking via the `SENDER_REP` selector family, with correct decay and a sound scoring model.
 
-~~~
-ip_score = action_multiplier * tanh (e * (metric_score/score_divisor))
-~~~
-
-`e` is the mathematical constant: 2.718.
-`tanh` is the hyperbolic tangent function.
-`metric_score` is the score Rspamd assigned the message.
-`action_multiplier` is the multiplier configured for the metric action, or zero in case action is `no action` and score is positive.
-`score_divisor` is supplied from setting with the same name- if not supplied no division is done (recommended value: 10-100).
-
-Default multipliers are shown below:
-
-~~~hcl
-actions {
-  reject = 1.0;
-  "add header" = 0.25;
-  "rewrite subject" = 0.25;
-  "no action" = 1.0;
-}
-~~~
-
-So with these settings:
-
-- a message with score -0.1 gets ip score: -0.265
-- a message with score -1.0 gets ip score: -0.991
-- a message with positive score & `no action` action always gets ip score: 0.00
-- a message with `add header` action & score 7 gets ip score: 0.249
-- a message with `reject` action and score 15 gets ip score: 1.0
-
-For each IP address/ASN/country/subnet Rspamd stores a key in a hash in Redis the value of which is formatted: `total ip score|total number of messages received` - for each incoming message Rspamd increments the total number of messages by one and adds the new ip score to the total.
-
-Once a predefined number of messages from a given IP address/subnet/ASN/country have been seen (10 in default configuration), Rspamd will begin to add scores to messages, which are calculated as follows:
-
-First Rspamd calculates a subscore for whichever things it has seen enough messages for (IP address/subnet/ASN/country) as follows:
-
-~~~
-subscore = score_multiplier * tanh(e * total_score / total_messages)
-subscore = floor(subscore * 10)
-~~~
-
-Score multiplier is dependent on the component the subscore is being generated for; default multipliers are shown below:
-
-~~~hcl
-scores {
-  asn = 0.5;
-  country = 0.1;
-  ipnet = 0.8;
-  ip = 1.0;
-}
-~~~
-
-Subscores are added to each other to determine a total. If `min_score` or `max_score` are defined in configuration these set a lower/upper bound for the total score.
-
-### Configuration
-
-Refer to example configuration below for available settings. To use default settings, just [configure Redis](/configuration/redis) either globally or just for `ip_score` and assign a weight to the `IP_SCORE` symbol. Module configuration should be added to `/etc/rspamd/local.d/ip_score.conf`.
-
-~~~hcl
-# how each action is treated in scoring
-actions {
-  reject = 1.0;
-  "add header" = 0.25;
-  "rewrite subject" = 0.25;
-  "no action" = 1.0;
-}
-# how each component is evaluated
-scores {
-  asn = 0.5;
-  country = 0.1;
-  ipnet = 0.8;
-  ip = 1.0;
-}
-# prefix for asn hashes
-asn_prefix = "a:";
-# prefix for country hashes
-country_prefix = "c:";
-# hash table in redis used for storing scores
-hash = "ip_score";
-# prefix for subnet hashes
-ipnet_prefix = "n:";
-# minimum number of messages to be scored
-lower_bound = 10;
-# the metric to score (usually "default")
-metric = "default";
-# upper and lower bounds at which to cap total score
-#max_score = 10;
-#min_score = -5;
-# Amount to divide subscores by before applying tanh
-score_divisor = 10;
-# list of servers (or configure redis globally)
-#servers = "localhost";
-# symbol to be inserted
-symbol = "IP_SCORE";
-~~~
-
-You will also have to register some weight for the symbol in metric. For example you could add the following to `/etc/rspamd/local.d/metrics.conf`:
-
-~~~hcl
-symbol "IP_SCORE" {
-  weight = 2.0;
-  description = "IP reputation";
-}
-~~~
+See the [reputation module documentation](/modules/reputation) for configuration details.

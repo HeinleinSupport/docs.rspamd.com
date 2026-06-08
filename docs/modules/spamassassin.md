@@ -15,18 +15,25 @@ into a single file and feed it to the SpamAssassin module:
 
 ~~~hcl
 spamassassin {
+	# Any key that is not a recognised option is treated as a path or glob
+	# to a ruleset file.  The names "ruleset" and "base_ruleset" below are
+	# arbitrary labels — they carry no special meaning.
 	ruleset = "/path/to/file";
 	base_ruleset = "/var/db/spamassassin/3.004002/updates_spamassassin_org/*.cf";
 	# Limit search size to 100 kilobytes for all regular expressions
+	# (default: 0, meaning unlimited)
 	match_limit = 100k;
 	# Those regexp atoms will not be passed through hyperscan:
 	pcre_only = ["RULE1", "__RULE2"];
 }
 ~~~
 
-Rspamd has the capability to read several files containing SpamAssassin rules, and it 
-also supports glob patterns. All rules are parsed into a uniform structure, which means 
+Rspamd has the capability to read several files containing SpamAssassin rules, and it
+also supports glob patterns. All rules are parsed into a uniform structure, which means
 that if an individual rule occurs multiple times, it may be overwritten.
+
+The module disables itself entirely if no ruleset files are successfully loaded. At least
+one valid ruleset must be supplied for the module to be active.
 
 ## Limitations and principles of work
 
@@ -37,15 +44,26 @@ rules are considered as **real** Rspamd rules that possess their symbol and scor
 other rules are typically concealed. Nevertheless, it is possible to specify a minimum 
 score required for a rule to be treated as a normal rule.
 
-    alpha = 0.1
+    alpha = 0.5
 
-By configuring the `spamassassin` section in this manner, all rules with scores greater 
-than `0.1` will be regarded as full-fledged rules, and evaluated accordingly. (Do note, 
-however, that `alpha` will not be applicable to rules lacking a `score` line in the file.)
+The default value of `alpha` is `0.5`. By configuring it in this manner, all rules with
+scores greater than `0.5` (in absolute value) will be regarded as full-fledged rules
+and evaluated accordingly. Lower the value to promote more SA rules into visible Rspamd
+symbols. (Note that `alpha` has no effect on rules that have no `score` line in the
+ruleset file.)
+
+The priority at which SA scores are registered in the Rspamd metric can be controlled with:
+
+    scores_priority = 2
+
+The default value is `2`. Because Rspamd assigns a higher priority to scores registered
+later (or with a higher priority value), this default allows SA scores to override any
+Rspamd built-in scores for the same symbol. Lower the value if you want Rspamd's own
+scores to take precedence.
 
 At present, Rspamd boasts the following functions:
 
-* body, rawbody, meta, header, uri and other rules
+* body, rawbody, full, meta, header, uri and other rules
 * some header functions, such as `exists`
 * some eval functions
 * some plugins:
@@ -55,10 +73,11 @@ At present, Rspamd boasts the following functions:
     + 'Mail::SpamAssassin::Plugin::RelayEval',
     + 'Mail::SpamAssassin::Plugin::MIMEEval',
     + 'Mail::SpamAssassin::Plugin::BodyEval',
-    + 'Mail::SpamAssassin::Plugin::MIMEHeader'
+    + 'Mail::SpamAssassin::Plugin::MIMEHeader',
+    + 'Mail::SpamAssassin::Plugin::WLBLEval',
+    + 'Mail::SpamAssassin::Plugin::HTMLEval'
 
-As of now, Rspamd does **not** offer support for network plugins, HTML plugins, and some other plugins. 
-However, this features are planned  to incorporate these features in upcoming releases of Rspamd.
+As of now, Rspamd does **not** offer support for network plugins and some other plugins.
 
 Despite these limitations, the majority of SpamAssassin rules can be utilized in Rspamd, 
 rendering the transition process far more seamless for users who opt to switch from SpamAssassin to Rspamd.

@@ -134,14 +134,17 @@ So each setting has the following attributes:
 	+ `from_mime` - match MIME sender
 	+ `rcpt` - match SMTP recipient
 	+ `rcpt_mime` - match MIME recipient
-	+ `ip` - match source IP address
+	+ `ip` - match source IP address (CIDR notation supported; also accepts `map:` URIs)
+	+ `ip_map` - match source IP address using a radix map (accepts a map definition instead of inline values)
+	+ `client_ip` - match the SMTP client IP as reported by the MTA (via `task:get_client_ip()`; distinct from the sending IP matched by `ip`)
+	+ `client_ip_map` - match the SMTP client IP using a radix map (accepts a map definition instead of inline values)
 	+ `hostname` - match the source hostname (regexp supported)
 	+ `user` - matches authenticated user ID of message sender if any
 	+ `authenticated` - matches any authenticated user
 	+ `local` - matches any local IP
 	+ `request_header` - collection of request header names and regexes to match them against (condition is satisfied if any match)
 	+ `header` - collection of MIME message header names and regexes to match them against (condition is satisfied if any match), available since Rspamd 1.7
-	+ `selector` - apply the specific selector to check if we need to apply these settings. If selector returns non-nil, then the settings are applied (selector's value is ignored so far). Available since Rspamd 1.8.
+	+ `selector` - apply the specific selector to check if we need to apply these settings. If selector returns a non-nil/truthy value, then the settings are applied (the value itself is not used beyond truthiness). Available since Rspamd 1.8.
 - `apply` - list of applied rules
 	+ `symbol` - modify weight of a symbol
 	+ `actions` - defines actions
@@ -150,6 +153,8 @@ So each setting has the following attributes:
 	+ `symbols_disabled` - array of disabled checks by symbol name (all other rules are enabled)
 	+ `groups_disabled` - array of disabled checks by group name (all other rules are enabled)
 	+ `subject` - set subject based on the new pattern: `%s` is replaced with the existing subject, `%d` is replaced with the message's spam score (e.g. `subject = "SPAM: %s (%d)"`)
+	+ `add_headers` - map of headers to add to the message (passed to the MTA via the milter interface)
+	+ `remove_headers` - map of headers to remove from the message (passed to the MTA via the milter interface)
 - `symbols` - add symbols from the list if a rule has matched
 - `inverse` - inverse match (e.g. it will NOT match when all elements are matched and vice-versa)
 

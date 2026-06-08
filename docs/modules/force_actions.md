@@ -29,11 +29,31 @@ Only one of `honor_action` or `require_action` should be set on a given rule.
 
 [Selectors](/configuration/selectors) can be used to generate dynamic `message`. The selector expression must be enclosed in `${}`.
 
+### Symbol names
+
+Each rule named `MY_RULE` produces a registered symbol called `FORCE_ACTION_MY_RULE` (the rule name is uppercased). These symbol names can be used when setting up dependencies or checking debug output.
+
 ### Execution Order
 
-If neither `require_action` nor `honor` is specified, the respective force action symbol is registered as a normal filter with a dependency on all symbols referenced in `expression`.
-If at least one of `require_action` or `honor` is specified, the respective force action symbol is registered as a post filter.
+If neither `require_action` nor `honor_action` is specified, the respective force action symbol is registered as a normal filter with a dependency on all symbols referenced in `expression`.
+If at least one of `require_action` or `honor_action` is specified, the respective force action symbol is registered as a post filter.
 For example, this is important if you want to revert an action that is decided upon the total score, as the action is only updated once all normal filters are completed.
+
+### Legacy configuration
+
+Older configurations used a flat `actions {}` block with action names as keys mapping to lists of expressions, and an optional `messages {}` block mapping expressions to SMTP messages:
+
+~~~hcl
+# Legacy format — avoid for new deployments
+actions {
+  reject = ["SYMBOL_A", "SYMBOL_B"];
+}
+messages {
+  SYMBOL_A = "Rejected by policy";
+}
+~~~
+
+When Rspamd detects this layout (`opts.actions` present) it logs "Processing legacy config" and registers symbols automatically. Symbol names in legacy mode are derived from a hash of the expression (`FORCE_ACTION_` followed by 12 hex characters) rather than a human-readable rule name. Migrate to the `rules {}` format to get stable, human-readable symbol names.
 
 ### Examples
 

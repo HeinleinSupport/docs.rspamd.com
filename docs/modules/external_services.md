@@ -7,7 +7,25 @@ title: External Services module
 
 The External Services module, which has been available since Rspamd 1.9.0, enables integration with a range of external services.
 
+## Supported scanner types
 
+Each rule block requires a `type` option that selects the backend. The following `type` values are supported by this module:
+
+| Type | Description |
+|---|---|
+| `icap` | Generic ICAP protocol client — works with many AV gateways (see [ICAP details](#icap-protocol-specific-details)) |
+| `oletools` | Office macro scanner via [olefy](https://github.com/HeinleinSupport/olefy) (see [oletools details](#oletools-specific-details)) |
+| `dcc` | [Distributed Checksum Clearinghouses](https://www.dcc-servers.net/dcc/) bulk-mail detection (see [DCC details](#dcc-specific-details)) |
+| `pyzor` | [Pyzor](https://github.com/SpamExperts/pyzor) bulk-mail detection (see [Pyzor details](#pyzor-specific-details)) |
+| `razor` | [Razor2](https://razor.sourceforge.net/) bulk-mail detection (see [Razor details](#razor-specific-details)) |
+| `spamassassin` | Delegate scoring to a running `spamd` daemon (see [SpamAssassin details](#spamassassin-specific-details)) |
+| `vadesecure` | [VadeSecure](https://www.vadesecure.com/) Filterd integration (see [VadeSecure details](#vadesecure-specific-details)) |
+| `cloudmark` | [Cloudmark](https://cloudmark.com/) Authority Server v2 (see [Cloudmark details](#cloudmark-specific-details)) |
+| `expurgate` | eXpurgate AntiSpam Filter (Retarus) |
+| `p0f` | Passive OS fingerprinting via [p0f](https://lcamtuf.coredump.cx/p0f3/) — sets symbols based on detected OS |
+| `virustotal` | [VirusTotal](https://www.virustotal.com/) file-report lookup (see [Virustotal details](#virustotal-details)) |
+
+The following antivirus engines (avast, clamav, fprot, kaspersky_av, kaspersky_se, metadefender, savapi, sophos) are handled by the **[Antivirus module](/modules/antivirus)**, not this module. They use the same shared backend code but are configured in `local.d/antivirus.conf`.
 
 ## Configuration
 
@@ -66,7 +84,8 @@ icap {
   # symbol to add (add it to metric if you want non-zero weight)
   symbol = "ICAP_VIRUS";
 
-  # type of scanner: "icap", "oletools", "dcc" or "vadesecure"
+  # type of scanner: "icap", "oletools", "dcc", "pyzor", "razor", "spamassassin",
+  #                  "vadesecure", "cloudmark", "expurgate", "p0f", "virustotal"
   type = "icap";
 
   # Scan mime_parts separately - otherwise the complete mail will be transferred
@@ -111,6 +130,19 @@ icap {
   whitelist = "/etc/rspamd/antivirus.wl";
 }
 ~~~
+
+## Common options
+
+The following options are available across most scanner backends. They are processed by `lua_scanners/common.lua`.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `show_attachments` | boolean | `false` | When set, the attachment filename is appended to the threat string in the symbol description, e.g. `Eicar-Test-Signature\|invoice.doc`. |
+| `min_size` | integer | `0` (oletools: `500`) | Skip scanning content smaller than this many bytes. |
+| `max_size` | integer | unset | Skip scanning content larger than this many bytes. |
+| `no_cache` | boolean | `false` | Disable Redis caching of scan results for this rule. |
+| `dynamic_scan` | boolean | `false` (oletools: `true`) | Skip scanning if the message already has a score exceeding twice the reject threshold or a pre-result of `reject`. |
+| `text_part_min_words` | integer | `0` (disabled) | When `scan_text_mime = true`, only scan text parts that contain at least this many words. |
 
 ## ICAP protocol specific details
 
@@ -158,10 +190,22 @@ Depending on the ICAP software there are some extra options available:
 # local.d/external_services.conf
 
 icap {
-  user_agent = "Rspamd"; # Use none, extended or a self defined name
+  user_agent = "Rspamd"; # Use none, extended or a self-defined name
   x_client_header = true; # Add X-Client-IP: $IP header
   x_rcpt_header = true; # Add X-Rcpt-To: $SMTP_RCPT header
   x_from_header = true; # Add X-Mail-From: $SMTP_FROM header
+
+  # TLS options
+  ssl = false;            # Enable TLS for the ICAP connection
+  no_ssl_verify = false;  # Disable TLS certificate verification (use with care)
+
+  # Encapsulated header control
+  req_headers_enabled = true;          # Include encapsulated HTTP request headers
+  http_headers_enabled = true;         # Include encapsulated HTTP response headers
+  req_fake_url = "http://127.0.0.1/mail"; # Fake URL used in the encapsulated request line
+  use_http_result_header = true;       # Inspect encapsulated HTTP status when no ICAP threat header found
+  use_http_3xx_as_threat = false;      # Treat HTTP 3xx redirects as a threat indicator
+  use_specific_content_type = false;   # Send the actual MIME part Content-Type instead of application/octet-stream
 }
 
 ~~~
@@ -766,23 +810,35 @@ spamassassin {
 
 ## Virustotal details
 
-To receive results, Rspamd utilizes the [`file/report`](https://virustotal.readme.io/v2.0/reference/file-report) endpoint of Virustotal. However, due to the strict policies of Virustotal, it is crucial that you have set your own key in the plugin configuration:
+To receive results, Rspamd utilizes the [`file/report`](https://virustotal.readme.io/v2.0/reference/file-report) endpoint of Virustotal. It is crucial that you set your own API key in the plugin configuration:
 
 ~~~hcl
 # local.d/antivirus.conf
 virustotal {
-  # Obtained from Virustotal
+  # Obtained from Virustotal (required)
   apikey = "xxx";
-  # Change if you use private mirror or another API
+  # Change if you use a private mirror or another API endpoint
   #url = 'https://www.virustotal.com/vtapi/v2/file';
-  # Minimum required to get scored
+  # Minimum number of engines required to score a hit (default: 3)
   #minimum_engines = 3;
-  # After this number we set max score
-  #full_score_engines = 7;
+  # Threshold for "low" category: minimum_engines .. low_category-1 engines (default: 5)
+  #low_category = 5;
+  # Threshold for "medium" category: low_category .. medium_category-1 engines (default: 10)
+  #medium_category = 10;
+  # High threat: medium_category and above
 }
 ~~~
 
-Due to the strict policies of Virustotal, Rspamd does not return the full result. Instead, it only provides the number of engines that matched and the MD5 hash, which can be used to view the full report on the Virustotal website.
+Rspamd uses a category-based model for Virustotal results. Depending on the number of engines that flagged a file, one of the following symbols is set:
+
+| Symbol | Condition | Default score |
+|---|---|---|
+| `VIRUSTOTAL_CLEAN` | Zero positives (or hash not found) | -0.5 |
+| `VIRUSTOTAL_LOW` | `minimum_engines` to `low_category - 1` positives | 2.0 |
+| `VIRUSTOTAL_MEDIUM` | `low_category` to `medium_category - 1` positives | 5.0 |
+| `VIRUSTOTAL_HIGH` | `medium_category` or more positives | 8.0 |
+
+Results with fewer than `minimum_engines` positives are treated as clean (no symbol set). The symbol description includes the MD5 hash and the engine count in the form `hash:positives/total`, which can be used to look up the full report on the Virustotal website.
 
 ## Cloudmark specific details
 
@@ -793,7 +849,7 @@ The cloudmark external service requires Cloudmark Authority Server, refer to the
 
 cloudmark {
   type = "cloudmark";
-  servers = "127.0.0.1:2780";
+  servers = "127.0.0.1:2713";
   use_https = false;
   action = "process"
   timeout = 5.0;

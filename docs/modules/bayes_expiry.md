@@ -78,7 +78,7 @@ Tokens are categorized based on their occurrence patterns:
 | Category | Description | Action |
 |----------|-------------|--------|
 | **Significant** | Strongly associated with one class (>75% of occurrences) | Made persistent |
-| **Common** | Similar frequency in all classes (within epsilon) | TTL reduced to 10 days |
+| **Common** | No single class dominates: `max_class_count / total <= (1 - epsilon_common)` | TTL reduced to 10 days |
 | **Insignificant** | Between significant and common | TTL set to expire value |
 | **Infrequent** | Very low total occurrences | TTL set to expire value |
 
@@ -139,6 +139,10 @@ With `volatile-ttl` eviction policy, Redis evicts keys with shorter TTLs first w
 ## Multi-class support
 
 The module supports classifiers with more than two classes (not just spam/ham). Token significance is evaluated across all configured classes, with tokens being considered significant if they strongly associate with any single class.
+
+The common-token test is also multi-class aware. A token is classified as common when no single class accounts for more than `(1 - epsilon_common)` of its total occurrences — i.e. when `max_class_count / total <= (1 - epsilon_common)`. With the default `epsilon_common = 0.01` this means a token is common unless one class holds more than 99% of its counts. For the standard two-class (spam/ham) case this is equivalent to the token not being dominated by either class.
+
+Class label mappings can be provided via `class_labels` in the classifier configuration. The module reads this mapping and stores it alongside the class symbols so that custom label names are correctly associated with their Redis keys.
 
 ## Monitoring
 

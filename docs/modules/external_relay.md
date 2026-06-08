@@ -48,7 +48,7 @@ enabled = true;
 # rules are defined inside rules {} block
 rules {
   # this is the name of the symbol we will register
-  EXTERNAL_RELAY_AUTHENTICATED {
+  EXTERNAL_RELAY_HOSTNAME {
     # a recognised strategy MUST be defined
     strategy = "hostname_map";
     # there may be additional non/optional settings available particular to the strategy
@@ -59,7 +59,7 @@ rules {
 
 The following settings are valid for all rules:
 
- * `priority` (optional) : prefilter priority, default 20 (higher value implies higher priority).
+ * `priority` (optional) : prefilter priority (higher value implies higher priority). Defaults to `lua_util.symbols_priorities.top + 1`, i.e. one above the top symbol priority — not a fixed value.
  * `symbol` (optional) : Name of symbol to insert, defaults to label of enclosing block
  * `strategy` (required) : The name of the strategy to apply
 
@@ -77,6 +77,12 @@ The following strategy-specific settings are defined:
 
  * `hostname_map` (required): A [map](/faq#what-are-maps) of hostnames which we expect to see from the sender and in `Received` headers.
 
+### local
+
+No additional settings. The strategy walks `Received` headers from top to bottom and uses the first entry whose IP is non-local. If all IPs in the headers are local, the last `Received` header is used as a fallback.
+
 ### ip_map
 
  * `ip_map` (required): A [map](/faq#what-are-maps) of IPs which we expect to see from the sender and in `Received` headers.
+
+The strategy walks `Received` headers from top to bottom and uses the first entry whose IP is not in the map. If all IPs are in the map, the last `Received` header is used as a fallback.

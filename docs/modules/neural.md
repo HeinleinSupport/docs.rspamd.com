@@ -384,10 +384,10 @@ When loading ANNs from Redis:
 
 1. Compare local symbol profile digest with stored profiles
 2. If exact match: load the ANN
-3. If within 30% symbol difference: load with distance penalty
+3. If within 50% symbol difference: load with distance penalty
 4. If too different: don't load (incompatible configuration)
 
-This allows some flexibility when configurations change slightly, but prevents using ANNs trained with completely different symbol sets.
+This allows some flexibility when configurations change slightly, but prevents using ANNs trained with completely different symbol sets. The threshold is 50% of the current symbol count (Levenshtein distance &lt; `0.5 * |symbols|`). A previously documented 30% figure referred to an older, stricter threshold that was relaxed to avoid forcing full retraining on every minor configuration change.
 
 ### Static profiles
 
@@ -682,9 +682,11 @@ symbols = {
 | Option | Default | Description |
 |--------|---------|-------------|
 | `max_trains` | 1000 | Samples needed per class to start training |
+| `max_epoch` | 1000 | Maximum training epochs the KANN trainer may run |
 | `max_usages` | 10 | Retrains before creating new profile |
-| `max_iterations` | 25 | Training epochs per run |
+| `max_iterations` | 25 | Training iterations passed to the KANN train1 call per run |
 | `learning_rate` | 0.01 | Neural network learning rate |
+| `learn_threads` | 1 | Number of threads used during training |
 | `mse` | 0.001 | Target mean squared error |
 | `autotrain` | true | Enable automatic training |
 | `train_prob` | 1.0 | Probability of storing each sample (0-1) |
@@ -694,14 +696,20 @@ symbols = {
 | `ham_skip_prob` | 0.0 | Ham skip rate in proportional mode |
 | `spam_score` | nil | Score threshold for spam (overrides verdict) |
 | `ham_score` | nil | Score threshold for ham (overrides verdict) |
-| `store_pool_only` | false | Store vectors without training |
+| `store_pool_only` | false | Store vectors in task cache only; disables autotrain (see External training pipeline example) |
+| `store_set_only` | false | Write spam/ham Redis sets but skip ANN training; autotrain must be enabled |
 
 ### Network architecture
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `hidden_layer_mult` | 1.5 | Hidden layer size multiplier |
-| `max_inputs` | nil | Enable PCA to reduce dimensions |
+| `hidden_layer_mult` | 1.5 | Hidden layer size multiplier (symbol-based single-layer ANN only) |
+| `max_inputs` | nil | Enable PCA to reduce input dimensions (requires BLAS) |
+| `layers` | nil | Layer size multipliers for embedding ANN (e.g. `[0.5, 0.25]`); auto-computed from input dim if nil |
+| `dropout` | nil | Dropout rate for embedding ANN (0.2 used automatically when embedding arch is selected; nil disables for symbol-based) |
+| `use_layernorm` | nil | Enable layer normalisation in embedding ANN (true used automatically when embedding arch is selected) |
+| `activation` | nil | Activation function: `"relu"` or `"gelu"` (gelu used by default for embedding arch; relu for symbol-based) |
+| `conv1d` | false | Use conv1d architecture for the ANN itself (distinct from `fasttext_embed` provider's `output_mode = "conv1d"` pre-processing) |
 
 ### Scoring options
 
@@ -772,6 +780,32 @@ These options apply when `type = "llm"`:
 | `fusion.normalization` | "none" | `none`, `unit`, or `zscore` |
 | `fusion.include_meta` | true | Include metatokens with providers |
 | `fusion.meta_weight` | 1.0 | Weight for metatokens |
+| `fusion.per_provider_pca` | false | Apply PCA to each provider's vector before fusion (reserved for future use) |
+
+### External model options
+
+The `external_model` block configures a pre-trained external ANN distributed as a URL-backed map. When present, Rspamd fetches the model on startup and reloads it automatically when the remote version changes.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `external_model.url` | (required) | URL of the external model (supports `http://`, `https://`, `file://`) |
+| `external_model.merge_alpha` | 0.5 | Blend factor: `alpha * external + (1-alpha) * local`; 1.0 replaces the local model entirely |
+| `external_model.providers_digest` | nil | Expected providers digest of the external model; used to reject incompatible uploads |
+
+When both a local Redis-trained ANN and an external model are available, their weights are merged using `merge_alpha`. If no local ANN exists yet, the external model is used directly. The merged result is cached in Redis for other workers.
+
+Example:
+
+```hcl
+rules {
+  default {
+    external_model {
+      url = "https://example.com/models/neural_default.bin";
+      merge_alpha = 0.3;  # Mostly keep local knowledge, blend in 30% from upstream
+    }
+  }
+}
+```
 
 ### Other options
 
@@ -780,6 +814,7 @@ These options apply when `type = "llm"`:
 | `blacklisted_symbols` | [] | Symbols to exclude |
 | `allowed_settings` | nil | Settings IDs that can train |
 | `profile` | {} | Static symbol profiles |
+| `allow_local` | false | When true, allow rspamc/controller scans to push training vectors (top-level setting, not per-rule) |
 
 ## Example configurations
 
@@ -1048,7 +1083,7 @@ debug_modules = ["neural"];
 **Vectors not being stored:**
 - Check `autotrain` is enabled (or use manual training)
 - Verify message isn't skipped (passthrough verdict, rspamc scan)
-- Check `allow_local` if scanning from localhost
+- If scanning via rspamc or the controller HTTP interface, vectors are skipped by default; set `allow_local = true` at the top level of `neural.conf` to enable them (see [allow_local](#other-options))
 
 ## Symbol registration
 

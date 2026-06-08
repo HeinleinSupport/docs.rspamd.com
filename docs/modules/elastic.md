@@ -15,7 +15,7 @@ Additionally module manages index template & policy and ingest pipeline for geoi
 
 ## Configuration
 
-Starting from version Rspamd 3.11.0 module is disabled by default and should be explicitly `enabled` via `local.d/elastic.conf` or `override.d/elastic.conf`.
+The module is enabled by default (`enabled = true`). It will self-disable at startup if no `server`/`servers` are configured, or if `enabled = false` is set explicitly in `local.d/elastic.conf` or `override.d/elastic.conf`.
 
 *Important:* by default module configures `index_policy` to delete logs older then 30 days.
 If you are updating from version 3.10.x or older and want to use a different index policy - please configure it before enabling this module.
@@ -43,10 +43,10 @@ no_ssl_verify = false;
 version = {
   autodetect_enabled = true;
   autodetect_max_fail = 30;
-  # override works only if autodetect is disabled
+  # override works only if autodetect is disabled; defaults shown below
   override = {
-    name = "opensearch";
-    version = "2.17";
+    name = "opensearch"; # default
+    version = "2.17"; # default
   }
 };
 limits = {
@@ -66,6 +66,7 @@ index_template = {
   headers_count_ignore_above = 5; # record only N first same named headers, add "ignored above..." if reached, set 0 to disable limit
   headers_text_ignore_above = 2048; # strip specific header value and add "..." to the end; set 0 to disable limit
   symbols_nested = false;
+  urls_nested = false;
   empty_value = "unknown"; # empty numbers, ips and ipnets are not customizable they will be always 0, :: and ::/128 respectively
 };
 index_policy = {
@@ -103,13 +104,28 @@ index_policy = {
     after = "30d";
   };
 };
-# Default headers collected: From, To, Subject, Date, User-Agent
-# Add extra headers to collect:
+# Base set of collected headers (overridable):
+collect_headers = ["From", "To", "Subject", "Date", "User-Agent"];
+# Add extra headers on top of the base list:
 extra_collect_headers = [
   # "Precedence",
   # "List-Id",
   # "X-Mailer",
 ];
+collect_urls = {
+  enabled = true;
+  max_urls = 0; # 0 = no limit; truncation keeps CTAs and most-repeated URLs first
+  separate_cta = true; # emit CTA URLs into a separate urls_cta field
+  full_urls = false; # log full URL text instead of just the host
+  full_cta_urls = false; # same, for CTA URLs
+  # params passed to task:get_urls()
+  get_url_params = {
+    content = true; # URLs from text/html content
+    images = false; # URLs from <img src> attributes
+    emails = false; # mailto: URLs
+    protocols = ["http", "https", "ftp"];
+  };
+};
 geoip = {
   enabled = true;
   managed = true;
