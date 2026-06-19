@@ -880,3 +880,53 @@ Update any such patterns, for example:
 # after:
 mailto_url = "mailto:";
 ~~~
+
+## Migration to Rspamd 4.1.1
+
+### 1. `/checkv3` Reply Format Is Now Content-Negotiated
+
+Before 4.1.1 the `/checkv3` endpoint ignored the `Accept` header (beyond a JSON-vs-msgpack toggle) and always returned a hard-coded `multipart/mixed` body. As of 4.1.1 the reply representation is negotiated from `Accept`, and compression from `Accept-Encoding` ([6fa991b5f](https://github.com/rspamd/rspamd/commit/6fa991b5f), PR [#6083](https://github.com/rspamd/rspamd/pull/6083)). The **default reply format has changed**, so existing clients that assumed the old fixed `multipart/mixed` output will receive a different body.
+
+New negotiation rules:
+
+| `Accept` request header | Reply |
+|---|---|
+| absent / `*/*` | `multipart/form-data` (**new default**) |
+| `message/rfc822` | `multipart/mixed` (the previous format) |
+| `application/json` / `application/msgpack` | single-body v2-style reply |
+| `multipart/form-data` | `multipart/form-data` |
+| only unsupported types (e.g. `application/xml`) | `406 Not Acceptable` |
+
+`Accept-Encoding: zstd` is honoured and defaults to `identity`; `Vary: Accept, Accept-Encoding` is always advertised.
+
+**Who is affected:** Operators with custom HTTP clients that POST to `/checkv3` and parse the reply. `rspamc` itself is already updated and needs no action. Clients that only use `/check` or `/checkv2` are not affected.
+
+**Migration:** Add the appropriate `Accept` header to your existing `/checkv3` request (the request body itself is unchanged; `request.v3` below is a placeholder for your current v3 multipart body):
+
+```bash
+# Restore the previous multipart/mixed reply by requesting it explicitly:
+curl -H 'Accept: message/rfc822' --data-binary @request.v3 http://localhost:11333/checkv3
+
+# Or ask for a plain single-body JSON result instead:
+curl -H 'Accept: application/json' --data-binary @request.v3 http://localhost:11333/checkv3
+```
+
+Do not send an `Accept` header listing only unsupported media types, or the request will be rejected with `406 Not Acceptable`.
+
+Note: `/checkv3` is now also routed on the controller (port `11334`), so `rspamc --protocol-v3` against localhost works without targeting a scan worker directly ([2de2ea9f0](https://github.com/rspamd/rspamd/commit/2de2ea9f0)).
+
+### 2. `mx_check`: Loopback-only MX Reclassified as Local
+
+A domain whose MX resolves only to loopback (`127.0.0.0/8` or `::1/128`) is now treated as a self-hosted/local MX and emits `MX_LOCAL_ONLY` (score `3.0`) instead of `MX_BOGON_ONLY` (score `8.0`) ([e7a8f3002](https://github.com/rspamd/rspamd/commit/e7a8f3002), closes [#6101](https://github.com/rspamd/rspamd/issues/6101)). This stops fully DMARC-aligned self-hosted mail from being hit with the strong `MX_BOGON_ONLY` penalty.
+
+**Who is affected:** Hosts where the scanning machine's own MX maps to loopback (e.g. the host FQDN pointed at `127.0.0.1` in `/etc/hosts`), and anyone with composites, score overrides, or `force_actions` keyed on `MX_BOGON_ONLY` for that scenario.
+
+**Migration:** Repoint any configuration that referenced `MX_BOGON_ONLY` for the loopback-only case to `MX_LOCAL_ONLY`. To adjust the new symbol's weight, override it in `local.d/groups.conf`:
+
+~~~hcl
+symbols {
+  "MX_LOCAL_ONLY" {
+    score = 0.0;
+  }
+}
+~~~
