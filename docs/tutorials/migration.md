@@ -930,3 +930,87 @@ symbols {
   }
 }
 ~~~
+
+## Migration to Rspamd 4.1.2
+
+### 1. Invalid selectors now fail configuration load
+
+The selector grammar is now anchored to the end of the input ([5eb40ae](https://github.com/rspamd/rspamd/commit/5eb40ae63), [#6127](https://github.com/rspamd/rspamd/pull/6127)). Previously the parser silently accepted the longest valid prefix and dropped the rest: `from("smtp"):domain:lower` (a second `:` cannot parse) was accepted and evaluated as `from("smtp"):domain`, and any trailing garbage after a selector or a `;` list element was ignored. Such selectors now fail configuration load with an error pointing at the offending token.
+
+**Who is affected:** any configuration using selectors — multimap, rbl, ratelimit, settings, reputation, or selectors checked through the WebUI — that contains a selector with a syntax error after a valid prefix. These selectors were never evaluating as written, so the config was already not doing what it said.
+
+**Migration steps:**
+
+1. Validate the configuration with the new version before restarting the service:
+```bash
+rspamadm configtest
+```
+2. Fix each rejected selector at the reported position. The most common mistake is using method syntax (`:`) where transform syntax (`.`) was intended:
+```
+from("smtp"):domain:lower    # rejected in 4.1.2
+from("smtp"):domain.lower    # correct
+```
+3. Review the affected rules after fixing: since the full chain now actually evaluates (instead of the silently truncated prefix), the rule's matching behaviour may change.
+
+### 2. Glob map entries now match the whole subject
+
+Glob map patterns are compiled anchored (`^(?:...)$`) at map load time ([06cf98f](https://github.com/rspamd/rspamd/commit/06cf98f2f), [#6125](https://github.com/rspamd/rspamd/issues/6125)). Previously glob entries were matched with substring semantics, so a `t.co` entry matched `walmart.com` and `*.bit.ly` matched `foo.bit.ly.evil.com`. Now bare names match exactly and wildcards match only what they say.
+
+**Who is affected:** all glob-based maps: multimap `glob`/`glob_multi` types, url_redirector `redirector_hosts_map`, dkim_signing and arc `signing_table`/`key_table`, mx_check exclusions and rbl glob `returncodes` matchers. Entries that relied on the accidental substring behaviour stop matching after the upgrade.
+
+**Migration steps:** review your glob maps and add explicit wildcards where substring matching was intended:
+
+~~~
+# Before 4.1.2 this single entry matched bit.ly anywhere in the subject:
+bit.ly
+
+# In 4.1.2 a bare entry matches exactly; list the subdomain wildcard explicitly:
+bit.ly
+*.bit.ly
+~~~
+
+A pattern that must match anywhere inside the subject needs wildcards on both sides (`*fragment*`). Note that the stricter matching is also the point of the fix: `*.bit.ly` no longer matching `foo.bit.ly.evil.com` closes an evasion vector, so do not blindly restore the old reach.
+
+### 3. Symbols flagged explicit_enable are strictly gated under settings
+
+Symbols carrying the `explicit_enable` flag now actually require explicit enabling ([011794c](https://github.com/rspamd/rspamd/commit/011794c9f), [#6144](https://github.com/rspamd/rspamd/pull/6144)). Previously such symbols were executed whenever *any* settings were applied to a task, regardless of content. Now they run only when listed in `symbols_enabled` of the applied settings (or force-enabled via `task:enable_symbol()`), including settings delivered via the `Settings` header.
+
+**Who is affected:** deployments that apply settings (settings ids, the `Settings`/`Settings-ID` headers, or map-driven settings) and expect symbols registered with the `explicit_enable` flag to keep running under those settings.
+
+**Migration steps:**
+
+1. Find which symbols carry the flag — configdump now shows a per-symbol `flags` array ([05a7c92](https://github.com/rspamd/rspamd/commit/05a7c92c9)):
+```bash
+rspamadm configdump --symbol-details | grep -B 4 explicit_enable
+```
+2. Add the required symbols to `symbols_enabled` of the relevant settings entries. With the default policy this switches the entry to whitelist mode (only listed symbols run); to keep all symbols enabled while merely unlocking the listed ones, use the new `policy` option:
+~~~hcl
+# local.d/settings.conf
+my_entry {
+  # ... match conditions ...
+  apply {
+    policy = "implicit_allow";
+    symbols_enabled = ["MY_EXPLICIT_SYM"]; # additive: unlocks, does not whitelist
+    symbols_disabled = ["UNWANTED_SYM"];   # subtractive
+  }
+}
+~~~
+
+### 4. Alias resolution no longer rewrites From domains
+
+The aliases module now refuses any rewrite that would change the domain of the From address, since SPF, DKIM and DMARC all key on it ([9fe6cb2](https://github.com/rspamd/rspamd/commit/9fe6cb2aa), [#6137](https://github.com/rspamd/rspamd/issues/6137), [#6141](https://github.com/rspamd/rspamd/pull/6141)). In particular, `googlemail.com` senders are no longer rewritten to `gmail.com` — only the gmail-style user-part canonicalization (dots and plus tags) is kept ([1b0cdd7](https://github.com/rspamd/rspamd/commit/1b0cdd779)). DMARC, SPF and forged-recipients checks now evaluate the sender addresses as they were transmitted.
+
+**Who is affected:**
+
+- Maps, rules or statistics keyed on the rewritten `gmail.com` From domain will now see `googlemail.com`. Add `googlemail.com` alongside `gmail.com` in from-domain maps. Email *hash* lookups (RBL email checks) still dedup via `lua_util.remove_email_aliases`, so they are unaffected.
+- Configurations with cross-domain virtual aliases applied to the From address: those rewrites are silently discarded now (recipient rewriting is unchanged).
+- Lua rules using the `orig` address flavour: `task:get_from({'mime', 'orig'})` now returns *only* the wire addresses when a rewrite preserved originals, instead of the originals plus the rewritten entries ([a7cbff9](https://github.com/rspamd/rspamd/commit/a7cbff984)). Code that relied on the combined list must query both flavours separately.
+- DMARC/SPF verdicts change for mail whose sender was rewritten by aliases — this is the fix itself (alignment is checked against the wire From), and no action is needed.
+
+### 5. lua_cryptobox secretbox: ciphertexts produced with short nonces
+
+Secretbox encrypt and decrypt used to pass the caller's short nonce pointer to libsodium instead of the zero-padded 24-byte buffer, reading up to 23 bytes out of bounds and producing ciphertexts that depended on adjacent memory contents ([efb4d5c](https://github.com/rspamd/rspamd/commit/efb4d5cd5), [#6121](https://github.com/rspamd/rspamd/issues/6121)). Short nonces are now correctly zero-padded, so a short nonce and its explicitly padded 24-byte form produce identical, stable ciphertexts.
+
+**Who is affected:** only custom Lua code using `rspamd_cryptobox` secretbox with nonces shorter than 24 bytes. Ciphertexts persisted by earlier versions under short nonces were never reliable and will most likely fail to decrypt after the upgrade.
+
+**Migration steps:** after upgrading, re-encrypt any persisted secretbox data, and prefer generating full 24-byte nonces going forward.
