@@ -1014,3 +1014,272 @@ Secretbox encrypt and decrypt used to pass the caller's short nonce pointer to l
 **Who is affected:** only custom Lua code using `rspamd_cryptobox` secretbox with nonces shorter than 24 bytes. Ciphertexts persisted by earlier versions under short nonces were never reliable and will most likely fail to decrypt after the upgrade.
 
 **Migration steps:** after upgrading, re-encrypt any persisted secretbox data, and prefer generating full 24-byte nonces going forward.
+
+## Migration to Rspamd 4.1.3
+
+Rspamd 4.1.3 tightens several resource limits that were previously unbounded, corrects a number of limits that were configured but never actually enforced, and changes how fuzzy matches are scored and reported. Most deployments are affected by at least one of the items below.
+
+### 1. Fuzzy Non-Exact Match Scoring Curve Changed
+
+The score multiplier for non-exact (shingle) fuzzy matches was `sqrt(prob)`, a curve anchored at zero ([c45ab97](https://github.com/rspamd/rspamd/commit/c45ab97a4)). Since the storage never returns a probability below the shingle match threshold of `0.5`, the entire reachable range collapsed into roughly `0.73 .. 1.0`: a marginal 17/32 shingle overlap scored almost as high as an exact match, which combined with high-weight deny lists turned weak matches into instant rejects.
+
+The multiplier is now `((prob - prob_bias) / (1 - prob_bias)) ^ prob_power`, anchored at the match threshold:
+
+| Shingle overlap | Old multiplier | New multiplier |
+|---|---|---|
+| 19/32 | ~0.77 | 0.19 |
+| 24/32 | ~0.87 | 0.50 |
+| 28/32 | ~0.94 | 0.75 |
+
+**Who is affected:** Every deployment using fuzzy rules that match on text or HTML hashes. Small image hashes keep their existing normalized curve, and exact matches are unchanged.
+
+Weak matches now contribute much less score, so messages previously rejected on a marginal fuzzy hit may now pass. Review the weights of your fuzzy symbols before assuming the rule stopped working. The old curve is not preserved and cannot be restored; it was simply broken.
+
+Two per-rule knobs are available in `local.d/fuzzy_check.conf`:
+
+~~~hcl
+rule "local" {
+  # anchor of the curve, defaults to the 0.5 match threshold
+  prob_bias = 0.5;
+  # 1.0 by default; raise it to discount weak matches more harshly
+  prob_power = 2.0;
+}
+~~~
+
+### 2. SPF DNS Limits Are Now Enforced and Yield permerror
+
+Three SPF limit bugs are fixed at once, and all three change verification results:
+
+* `max_dns_nesting` was checked but the nesting counter was never incremented, so the limit had no effect at all and include/redirect chains were bounded only by the DNS request counter. Nesting depth is now tracked per resolved element and enforced when an include or redirect is about to be followed ([b80fd076](https://github.com/rspamd/rspamd/commit/b80fd076d)).
+* The DNS request counter was compared with `>` while being incremented after the check, so a limit of 30 evaluated 31 elements. The comparison is now `>=`, so exactly `max_dns_requests` elements are evaluated: one fewer than before.
+* Exceeding `max_dns_requests` or `max_dns_nesting` used to leave only the offending element unparsed, and the record was still evaluated with whatever fitted in the budget, usually ending as a definitive fail via its trailing `-all`. RFC 7208 4.6.4 requires `permerror` instead, and that is what Rspamd now returns ([66cdc8bf](https://github.com/rspamd/rspamd/commit/66cdc8bfa)).
+* Names returned by `mx` and `ptr` were expanded into A/AAAA requests against a counter that never changed, and SPF uses the forced resolver API that bypasses `dns_max_requests`, so a single large RRset produced an unbounded number of queries. Both the RFC limit of 10 address lookups per `mx`/`ptr` element and a new per-record expansion budget are now enforced ([ea20c2f5](https://github.com/rspamd/rspamd/commit/ea20c2f59)).
+
+**Who is affected:** Anyone acting on `R_SPF_FAIL` (rejection policies, DMARC alignment, `settings` conditioned on SPF symbols). Senders with large or deeply nested SPF records will flip from `R_SPF_FAIL` to `R_SPF_PERMFAIL`, which usually carries a very different weight in your policy.
+
+Records carrying any flag are not cached in the LRU, so a domain that trips a limit is re-resolved on every message. Watch your resolver load after the upgrade for domains that now permerror.
+
+Review the limits and the new `max_dns_expansions` option in `local.d/spf.conf`:
+
+~~~hcl
+# maximum SPF elements requiring a DNS lookup, per RFC 7208
+max_dns_requests = 30;
+# include/redirect nesting depth, enforced for the first time in 4.1.3
+max_dns_nesting = 10;
+# new in 4.1.3: per-record budget for A/AAAA lookups spawned by mx/ptr
+max_dns_expansions = 100;
+~~~
+
+Setting a limit to zero disables it, but flattening a record still recurses over the same chain and remains bounded by the hard nesting cap compiled into Rspamd.
+
+Check for newly appearing permerrors before and after the upgrade:
+
+```bash
+rspamc stat | grep -i spf
+grep -c R_SPF_PERMFAIL /var/log/rspamd/rspamd.log
+```
+
+### 3. DKIM Signature Limit and Key Bounds
+
+**`max_sigs` now counts every signature header examined** ([d560f9e8](https://github.com/rspamd/rspamd/commit/d560f9e8e)). Previously the check sat at the bottom of the loop, incremented before comparing with `>`, and three `continue` paths (parse failure, `trusted_only` skip, failed key request) jumped over the increment entirely. Consequences:
+
+* The default of `5` used to permit six signatures; it now permits exactly five.
+* Malformed or skipped signatures now count against the limit. Five junk `DKIM-Signature` headers ahead of a valid one will push the valid one out, and `R_DKIM_ALLOW` will not be inserted.
+
+**Who is affected:** Deployments that see messages with many DKIM signatures, in particular mailing lists and forwarders that re-sign, and anyone whose policy depends on `R_DKIM_ALLOW` for such traffic.
+
+If the "stopped after N signatures" line starts appearing in your logs for legitimate mail, raise the limit in `local.d/dkim_check.conf` (and `local.d/arc.conf` if you tune ARC separately):
+
+~~~hcl
+max_sigs = 8;
+~~~
+
+**Oversized public keys are now rejected** ([871dc8a1](https://github.com/rspamd/rspamd/commit/871dc8a12)). The `p=` tag is capped at 4096 base64 characters before any allocation, and parsed keys wider than 8192 bits are refused. Real keys are far below both bounds: 44 characters for ed25519, 736 for a 4096 bit RSA key. Signers using a modulus above 8192 bits now produce `R_DKIM_PERMFAIL` instead of a verification result. RFC 8301 requires verifiers to handle 1024 to 4096 bits, so this leaves twice the required headroom. Only verification is affected; signing keys are loaded through a different path.
+
+**The `h=` header list is capped at 1000 items** for both signing and verification ([318d3183](https://github.com/rspamd/rspamd/commit/318d31837)). The shipped `default_sign_headers` list has 27 entries, so no realistic signing policy is affected.
+
+**Ed25519 verification now works on more builds** ([89b9d5a0](https://github.com/rspamd/rspamd/commit/89b9d5a08)). All Ed25519 DKIM crypto is libsodium, which is a mandatory dependency, but it was gated behind a probe for OpenSSL's `EVP_PKEY_ED25519`. On an OpenSSL build lacking that NID, ed25519 signatures were previously not verified at all and will now produce `R_DKIM_ALLOW` or `R_DKIM_REJECT`. If you build Rspamd yourself, expect new DKIM (and therefore DMARC) results on ed25519-signed mail.
+
+### 4. url_redirector Blocks Local Destinations by Default
+
+`rspamd_http.request()` connected to whatever a URL or its DNS resolution yielded, including loopback, link-local and RFC1918 addresses. A new `forbid_local` option is enforced at the connection chokepoint, and it is enabled by default in `url_redirector` ([e57fb647](https://github.com/rspamd/rspamd/commit/e57fb6472)). Message URLs and their redirect targets are attacker controlled, and hop limits alone do not stop a crafted redirect from probing cloud metadata endpoints or internal services.
+
+**Who is affected:** Operators who resolve redirects through an internal service, or whose `local_addrs` radix covers the hosts that `url_redirector` needs to reach. Those lookups will now fail.
+
+To restore the previous behaviour, add to `local.d/url_redirector.conf`:
+
+~~~hcl
+forbid_local = false;
+~~~
+
+The same option is available to any Lua plugin calling `rspamd_http.request()` and is off by default there. It uses the address class check plus your configurable `local_addrs`, so review `local_addrs` in `local.d/options.inc` if the result is not what you expect.
+
+### 5. New Size Ceilings on HTTP, Maps and Decompression
+
+Several paths that were entirely unbounded now enforce a limit. Each of these can reject input that Rspamd previously accepted.
+
+**Controller, proxy and control sockets now cap request bodies at `max_message`** ([1ae11c4d](https://github.com/rspamd/rspamd/commit/1ae11c4db)). Only the normal worker did so before, while the controller router, the proxy client connection and the main control socket accepted a declared `Content-Length` of any size, causing an unbounded preallocation before routing or authentication. Oversized requests are now rejected with `413` by the controller and by closing the connection in the proxy.
+
+**Who is affected:** Anyone scanning messages larger than `max_message` (50Mb by default) through `rspamd_proxy` or the controller `/checkv2` endpoint. These used to be accepted; they now fail.
+
+~~~hcl
+# local.d/options.inc
+max_message = 100Mb;
+~~~
+
+**Remote HTTP maps are bounded by `max_map_size`, 256Mb by default** ([95d51df4](https://github.com/rspamd/rspamd/commit/95d51df4a)). Map client connections never set a body limit, so a map server could feed an arbitrarily large body that is fully retained in shared memory, and the zstd path allocated its output buffer straight from the frame-advertised decompressed size and then doubled it without limit. Frames advertising more than the ceiling are now rejected upfront. The same limit bounds the map shm-cache and static map paths.
+
+**Who is affected:** Sites serving very large maps (large hash or domain lists). Set a global ceiling, or override it per map:
+
+~~~hcl
+# local.d/options.inc
+max_map_size = 512Mb;
+~~~
+
+~~~hcl
+maps {
+  "https://example.com/huge.map" {
+    max_size = 1Gb;
+    timeout = 30s;
+  }
+}
+~~~
+
+Setting `max_map_size = 0` disables the limit.
+
+**Lua HTTP responses are bounded by `max_lua_http_response`, 256Mb by default** ([9fe7ae5f](https://github.com/rspamd/rspamd/commit/9fe7ae5f5)). It applies whenever a request does not pass an explicit `max_size`; an explicit `max_size = 0` still disables the limit for that request. A negative `max_size` used to be converted straight to an unsigned value, silently producing an effectively unlimited cap, and is now rejected with a logged error. Third-party plugins passing a negative value will start logging errors and must be fixed.
+
+**zstd decompression is bounded everywhere** ([aaa53f54](https://github.com/rspamd/rspamd/commit/aaa53f54f), [bd1c9a27](https://github.com/rspamd/rspamd/commit/bd1c9a277)). The streaming loop was copy-pasted in seven places with inconsistent bounding: the proxy had no output ceiling at all, and the task and protocol v3 paths could overshoot `max_message` up to twofold. All sites now share one helper bounded by `max_message` (task, protocol v3, proxy) or `max_map_size` (map cache and static paths). Compressed traffic that previously decompressed to more than `max_message` is now refused.
+
+**Shared memory protocol semantics changed** ([898c21aa](https://github.com/rspamd/rspamd/commit/898c21aa1)). `Shm-Offset` and `Shm-Length` were each validated on their own but never together, so an offset near the end combined with a full length produced a body running past the mapping. Both protocol versions now share one validated helper, and `Shm-Offset` without `Shm-Length` means "up to the end of the segment" rather than "the whole segment". Segment names must now refer to a regular, non-empty object, and payloads are capped at `max_message`.
+
+**Who is affected:** Third-party clients or milters that talk the Rspamd HTTP protocol using shared memory bodies. Clients sending an offset without a length, or a segment that is not a regular object, need to be updated.
+
+### 6. MIME and URL Parser Limits Are Now Actually Enforced
+
+A series of parser hardening changes bounds resources that a single message could previously amplify. These affect scan results, not just memory:
+
+* **`max_urls` is enforced at every insertion point** ([898b5e56](https://github.com/rspamd/rspamd/commit/898b5e56c)). Previously only plain-text callbacks respected it; HTML links, query URLs, images, displayed URLs, subject URLs and Lua-injected URLs were unbounded. The text pre-check also moved from `>` to `>=`, so the cap is now exact. Messages with very many URLs will have fewer of them available to RBL, reputation and multimap rules than before. Raise `max_urls` in `local.d/options.inc` if you rely on exhaustive extraction.
+* **Content-Type and Content-Disposition parameters are capped at 1024 per header** ([4ecae17a](https://github.com/rspamd/rspamd/commit/4ecae17a7)). Content-Type flags the truncation as broken; Content-Disposition simply stops. The RFC 2231 continuation ordering fix in the same commit can change how a split parameter value is reconstructed.
+* **Per-part newline metadata is capped at 100k positions** ([1ad069fa](https://github.com/rspamd/rspamd/commit/1ad069fa8)), exposed as `newlines_truncated` in `textpart:get_stats()`. Text normalization and line counters are unaffected.
+* **HTML attributes are bounded per tag and per task** ([b6111378](https://github.com/rspamd/rspamd/commit/b6111378f)), synthetic tags are capped ([68eb633b](https://github.com/rspamd/rspamd/commit/68eb633b5)), and DOM traversal no longer recurses on the native stack ([86e1b7787](https://github.com/rspamd/rspamd/commit/86e1b7787)).
+* **Alternative-part linking now shares a single visit budget per task** ([285d201d](https://github.com/rspamd/rspamd/commit/285d201df)). When it is exhausted, the remaining parts are left unlinked and a warning is logged. Fasttext language detection now skips overlong words and caps the total tokens fed to the model, which can change the detected language on pathological bodies.
+* **Archive metadata, 7zip folder counts and MIME header parsing are bounded** ([adcb8600](https://github.com/rspamd/rspamd/commit/adcb86001), [bc409ba3](https://github.com/rspamd/rspamd/commit/bc409ba39), [c653253b](https://github.com/rspamd/rspamd/commit/c653253b3), [6d5f4fcb](https://github.com/rspamd/rspamd/commit/6d5f4fcbf)). Deeply pathological archives that used to be fully parsed are now reported as truncated or broken.
+* **Nested comment depth in the Content-Disposition and SMTP date grammars is capped at 8** ([e36060c3](https://github.com/rspamd/rspamd/commit/e36060c3f)). Headers nesting comments deeper than that now fail to parse instead of consuming memory proportional to their own length.
+
+**Who is affected:** Everyone, but visibly only for messages that were previously exercising these unbounded paths. If you have custom rules that count URLs, headers or archive entries, re-validate them against your corpus.
+
+Two parser fixes in the same release change extraction results for ordinary mail: PDF `Td`/`TD` operators now emit newlines, so consecutive text lines are no longer concatenated into false URLs such as `http://2026.you` ([ddcfc4b0](https://github.com/rspamd/rspamd/commit/ddcfc4b08)), and HTML image style dimensions are parsed correctly instead of being read from an uninitialized variable ([800aaf45](https://github.com/rspamd/rspamd/commit/800aaf45f)). Rules keyed on image dimensions may fire differently.
+
+### 7. Fuzzy Match Reporting Format Changed
+
+Fuzzy results are now structured throughout ([a4bc4de0](https://github.com/rspamd/rspamd/commit/a4bc4de00), [f00d108a](https://github.com/rspamd/rspamd/commit/f00d108ad), PR [#6150](https://github.com/rspamd/rspamd/pull/6150)), and two externally visible formats changed with it:
+
+* **Symbol options for non-exact matches** now carry both hash prefixes: `flag:found:prob:type:queried`. Previously only one hash was present.
+* **The `X-Rspamd-Fuzzy` header** produced by `milter_headers` now annotates every matched hash with the rule, flag, probability, the queried hash for non-exact matches and the storage timestamp. It falls back to the legacy `fuzzy_hashes` pool variable only when no structured results exist.
+
+**Who is affected:** Log scrapers, history exporters, downstream MTA rules and any Lua code matching on fuzzy symbol options or parsing `X-Rspamd-Fuzzy`. Update the parsers before upgrading, or pin the consumers until they are updated.
+
+New interfaces are available instead of string parsing:
+
+* `task:get_fuzzy_results()` returns the structured records (rule, symbol, upstream, stored and queried digests, type, probability, score, flag, value, hash timestamp) from the `fuzzy_matches` mempool variable; all queried hashes including misses are in `fuzzy_checked`.
+* `fuzzy_check.check(task, cb, rule, timeout[, hashes][, server])` queries a storage directly.
+* `rspamadm fuzzy_hash` computes the hashes of a message per configured rule, checks them against the storage with `-C` and queries explicit hex digests with `-H` ([90b27228](https://github.com/rspamd/rspamd/commit/90b27228e)).
+
+A storage running 4.1.3 sets a flag bit in the first reserved byte of the reply when the digest field holds the digest actually resolved by the backend; the client exposes this as the `confirmed` field. Against a legacy storage the field is absent rather than guessed.
+
+### 8. ClickHouse Schema Version 11
+
+The ClickHouse module adds `Fuzzy.Hash`, `Fuzzy.Queried`, `Fuzzy.Rule`, `Fuzzy.Prob` and `Fuzzy.Flag` nested columns, filled from the structured fuzzy results ([cae30bbf](https://github.com/rspamd/rspamd/commit/cae30bbf6)).
+
+**Who is affected:** Every deployment with the `clickhouse` module enabled.
+
+The module applies the schema upgrade itself on the first connection after the upgrade, so the ClickHouse user configured in `local.d/clickhouse.conf` must be allowed to run `ALTER TABLE`. Verify after starting:
+
+```bash
+clickhouse-client --query "SELECT * FROM rspamd_version"
+clickhouse-client --query "DESCRIBE TABLE rspamd" | grep -i fuzzy
+```
+
+If you feed the same tables from several Rspamd nodes, upgrade them together or expect the pre-4.1.3 nodes to keep writing rows with the new columns empty. Roll the schema change out during a maintenance window if your table is large.
+
+### 9. Fuzzy Storage: Admission Control, Rate Limits and Statistics
+
+Fuzzy storage now performs admission checks before parsing a datagram ([d2cf061b](https://github.com/rspamd/rspamd/commit/d2cf061b1)). Previously every datagram was parsed, and decrypted when encrypted, before any check ran: the blocklist and the rate limit were only consulted well after a session allocation, an ECDH, a MAC verification and the Lua pre-handlers. Four behaviour changes follow:
+
+* **Blocklisted peers get no reply on UDP.** The blocklist is checked in the read loop, before a session is allocated, and building a reply would require exactly the parse being avoided. `accept_tcp_socket` already dropped blocked peers without replying, so both transports now behave alike. Anything that expected a `403` from a blocked source will now see a timeout.
+* **`PING` and `STAT` are rate limited.** Both are answered unauthenticated and were previously unmetered. A rate-limited `PING` or `STAT` is dropped rather than answered with `403`, since the reply is the entire cost of those commands. This stays inert unless `ratelimit_rate` and `ratelimit_burst` are set, and the existing whitelist and local address exemptions still apply.
+* **Key lookup and MAC verification failures are logged at debug level**, not error. Both are reachable by anyone who can send a datagram, before any rate limit applies, so an error line per packet turned a spoofed source flood into a log volume attack. Alerting keyed on those log lines will stop firing.
+* **The rate limit bucket is no longer allocated when `rate` or `burst` are unset**, so unconfigured storages stop accumulating an LRU entry per masked source.
+
+**Who is affected:** Operators of fuzzy storage with `ratelimit_rate` and `ratelimit_burst` configured, and anyone monitoring storage health with `PING` or `STAT` probes.
+
+Monitoring probes now share the same per-source budget as scan traffic. Exempt them explicitly in the fuzzy worker configuration:
+
+~~~hcl
+worker "fuzzy" {
+  ratelimit_whitelist = "/etc/rspamd/fuzzy_ratelimit_whitelist.map";
+}
+~~~
+
+**`fuzzystat` output gained new fields.** `blocked_requests`, `decrypt_errors` and `ratelimited_requests` are reported so that the now-silent drops stay observable, and clients without a key (for example those permitted by `allow_update`) are tracked under a dedicated `unkeyed` pseudo-key with the same aggregate and per-IP counters as a real key ([56157dc6](https://github.com/rspamd/rspamd/commit/56157dc6b)). Monitoring code that iterates the key list must tolerate `unkeyed`; anything keying on a fixed set of keys will need updating.
+
+```bash
+rspamadm control fuzzystat
+```
+
+Note that `errors_ips` remains telemetry only. It is incremented when parsing failed, which takes no key and no handshake, so on UDP the recorded address is forgeable and must never be used as a ban source.
+
+### 10. Fuzzy Redis Storage Persists Shingle Sets
+
+The Redis backend now stores the shingle key suffixes as the `S` field of the digest hash on every `ADD` ([cb8de0c3](https://github.com/rspamd/rspamd/commit/cb8de0c34), PR [#6151](https://github.com/rspamd/rspamd/pull/6151)). This fixes two long-standing blind spots: `DEL` on a digest-only deletion (a periodic deletion by hash list, for instance) can now reconstruct and remove the orphaned shingle slots, and `REFRESH` refreshes the slots the digest still owns instead of the slots of whichever message happened to trigger it.
+
+**Who is affected:** Operators of Redis-backed fuzzy storage. The sqlite backend needs no changes, since its shingles table cascades on delete.
+
+Two operational consequences:
+
+* **Redis memory grows.** Each digest now carries its shingle set. Check your `maxmemory` headroom before upgrading a large storage.
+* **Only hashes added or refreshed by 4.1.3 carry the field.** Existing digests remain without it until they are re-added, so the `DEL` and `REFRESH` fixes apply gradually. In a mixed-version cluster writing to the same Redis, hashes added by older nodes still produce orphaned slots; upgrade all writers to get the full effect.
+
+Per-hash introspection is available once the storage is upgraded ([f94ecd1d](https://github.com/rspamd/rspamd/commit/f94ecd1de)). It reports flag slots and values, creation time, remaining TTL and shingle slot ownership, which answers directly whether a hash can still produce fuzzy matches or whether its shingle anchor has decayed:
+
+```bash
+rspamadm control fuzzyhash <128 hex digest>
+```
+
+### 11. Lua API Changes
+
+**`rspamd_http.request()` error delivery in coroutine mode** ([0eddd23d](https://github.com/rspamd/rspamd/commit/0eddd23dd)). Synchronous failures (unparseable URL, blocked session, immediate connection or DNS-send failure) returned a bare `false`, which coroutine callers read as `err = false, response = nil`, crashing on `response.code` in every caller written as `if not err then ... end`. They now return `(err, nil)` like the connection error path. DNS-stage failures (resolve error, no records, connection refused) went through the callback-only path and were silently swallowed for coroutine requests, leaving the yielded thread suspended forever; the thread is now resumed with `(err, nil)`.
+
+**Who is affected:** Third-party plugins using the coroutine form of `rspamd_http.request()`. Code that special-cased the old bare `false`, or that relied on a request never returning, must be updated. Code written the documented way (`local err, response = rspamd_http.request(...)`) now behaves correctly for the first time on these paths.
+
+**Plain text parts are linked to their HTML alternative** ([212e419a](https://github.com/rspamd/rspamd/commit/212e419a9)). The alternative-part search compared the raw `IS_TEXT_PART_HTML` flag value (0 or 4) against a boolean argument (0 or 1), so only the html-to-plain direction of `alt_text_part` was ever populated. Both directions now work. Lua rules that skip a text part when it has an alternative will now also skip plain parts that have an HTML sibling, which previously always fell through to full processing. Re-check any custom rule that tests for an alternative part.
+
+**`url_suspect` dropped the `length_thresholds.suspicious` setting** ([b1d5cbec](https://github.com/rspamd/rspamd/commit/b1d5cbec6)). Both arms of the branch inserted the same `URL_USER_PASSWORD` finding, so the threshold never affected anything; it is removed together with the dead branch. `mailto` URLs are now explicitly excluded from the user-field check, since every email address carries a local part. Remove the setting from your configuration if you set it.
+
+### 12. WebUI Rewritten Without jQuery or Font Awesome
+
+jQuery is no longer loaded by the WebUI and the vendored `jquery-3.7.1.min.js` is deleted ([9ab0ed6a](https://github.com/rspamd/rspamd/commit/9ab0ed6a8), PR [#6124](https://github.com/rspamd/rspamd/pull/6124)). All modules were migrated to native DOM, `XMLHttpRequest` and the Bootstrap 5 vanilla constructor API. The Font Awesome "SVG with JS" framework is gone as well, replaced by a local subset sprite (`img/icons.svg`, 35 glyphs) rendered by `app/icons.js`, removing about 900 KB of JavaScript ([123b72ea](https://github.com/rspamd/rspamd/commit/123b72eaf), PR [#6145](https://github.com/rspamd/rspamd/pull/6145)).
+
+**Who is affected:** Anyone shipping custom WebUI modules, local patches, or a theme that relies on `$`, on `$.ajax`, on the Font Awesome CSS classes, or on the `[data-fa-i2svg]` selectors.
+
+Concretely:
+
+* Custom modules must be ported off jQuery. The shared helpers `common.el`, `common.delegate` and `common.data` cover the common construction, delegation and metadata patterns.
+* Icons come from the sprite. Adding a glyph means listing it in `icons-manifest.txt` and regenerating with `icons-build.mjs`; CI runs `npm run check:icons`, which fails on any stale generated file or Font Awesome version drift.
+* The `modalDialog` attribute was renamed from the Bootstrap 4 `data-backdrop` to the Bootstrap 5 `data-bs-backdrop`, so the static-backdrop behaviour is applied for the first time.
+* The WebUI now treats only 200-299 as success. The dead `|| xhr.status === 304` branch was removed, since the controller sends `Cache-Control: no-store` on every response and never emits `Last-Modified` or `ETag` (issue [#3330](https://github.com/rspamd/rspamd/issues/3330)) ([29d76e4a](https://github.com/rspamd/rspamd/commit/29d76e4a2)). A 2xx `/stat` response with a non-JSON body (a truncated proxy response, a captive portal page) now routes to the login dialog instead of loading a half-initialized UI ([f116cf0a](https://github.com/rspamd/rspamd/commit/f116cf0a8)). If a reverse proxy in front of the controller rewrites or caches WebUI responses, verify it before upgrading.
+
+Force a hard reload in the browser after upgrading, as stale cached module files will not match the new `main.js` shim.
+
+### 13. Duplicated Module Sections Now Warn
+
+`rspamd_config_get_module_opt()` returns the `rule` or option object from the first section only when a C module section is duplicated at the top level, for example by a stray file in `modules.d`. The remaining sections were silently ignored and their rules never loaded. Rspamd now emits an explicit warning per configured C module so that `configtest` and the startup log surface the problem ([399b7461](https://github.com/rspamd/rspamd/commit/399b7461a)). Lua modules were never affected, as `get_all_opt()` flattens the whole duplicate chain.
+
+**Who is affected:** Anyone whose configuration defines the same C module section more than once. Nothing changes functionally, but you may discover that rules you believed were active have never been loaded.
+
+```bash
+rspamadm configtest -s
+```
+
+Fix any warning by merging the duplicate sections into a single block, then re-run `configtest` and expect the affected rules to start loading. Verify with `rspamc stat` or a test message that the newly loaded rules do not change your scores unexpectedly.
