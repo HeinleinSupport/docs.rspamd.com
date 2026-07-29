@@ -1283,3 +1283,76 @@ rspamadm configtest -s
 ```
 
 Fix any warning by merging the duplicate sections into a single block, then re-run `configtest` and expect the affected rules to start loading. Verify with `rspamc stat` or a test message that the newly loaded rules do not change your scores unexpectedly.
+
+## Migration to Rspamd 4.1.4
+
+Rspamd 4.1.4 is primarily a bug-fix release, but several fixes intentionally change observable behaviour. Review the items below before upgrading.
+
+### 1. Controller Authentication Now Fails Closed on Malformed Password Hashes
+
+Previously, if the `password` or `enable_password` configured for the controller worker was a *malformed* encrypted hash (for example a truncated `$1$` with the salt or key component missing), the verification code skipped the comparison entirely and accepted **any** supplied password. This fail-open behaviour has been fixed: a malformed hash now rejects every authentication attempt, and the malformed hash is reported in the logs. Rspamd also validates the complete encoded hash (salt and key lengths against the KDF specified by the hash id) at startup instead of only checking the `$<id>` prefix ([da43397](https://github.com/rspamd/rspamd/commit/da433972a)).
+
+**Who is affected:** Only setups where the configured controller password hash is incomplete or corrupted (e.g. a bad copy-paste). A tell-tale sign is that logging in to the WebUI currently works with *any* password — that means your hash is malformed and your controller has been effectively unauthenticated. Valid hashes are unaffected.
+
+**Migration procedure:**
+
+1. Verify your configured hashes have all three components: `$<id>$<salt>$<key>`.
+2. If in doubt, regenerate the password hash:
+```bash
+rspamadm pw
+```
+3. Put the new hash into `local.d/worker-controller.inc`:
+~~~hcl
+password = "$2$<salt>$<key>";
+enable_password = "$2$<salt>$<key>";
+~~~
+4. Restart Rspamd and check the startup log: malformed password hashes are now reported explicitly. If you skip this and your hash is malformed, you will be locked out of the controller/WebUI after the upgrade (which is still strictly better than the previous behaviour of letting everyone in).
+
+### 2. Building with jemalloc Requires the Shared Library
+
+The build system previously preferred the static `libjemalloc_pic.a` and embedded a private copy of the allocator into each of Rspamd's shared objects, which caused a startup segfault in jemalloc-enabled builds ([#6153](https://github.com/rspamd/rspamd/issues/6153)). CMake now searches for the shared jemalloc library only and **fails at configure time** when just a static archive is available, unless `ENABLE_STATIC` is used. jemalloc is linked as a single shared instance per process, and `libjemalloc-dev` is now declared as a Debian build dependency ([a2b649e](https://github.com/rspamd/rspamd/commit/a2b649e9e), [12d999a](https://github.com/rspamd/rspamd/commit/12d999a45), [#6155](https://github.com/rspamd/rspamd/pull/6155)).
+
+**Who is affected:** Only users building from source with `-DENABLE_JEMALLOC=ON` (including custom package rebuilds) on systems where only the static jemalloc library is installed. Users of the official packages need no action.
+
+**What to do** — install the shared jemalloc development package before building:
+
+```bash
+# Debian/Ubuntu
+apt install libjemalloc-dev
+
+# Fedora/RHEL
+dnf install jemalloc-devel
+```
+
+Alternatively, configure with `-DENABLE_JEMALLOC=OFF`, or use `-DENABLE_STATIC=ON` for fully static builds, which remain allowed to use the static archive.
+
+### 3. The Regexp Input Size Limit Now Applies to Named Scopes
+
+The `regexp.max_size` limit (1 MiB by default) was only applied to the default regexp scope, so regexps registered in *named* scopes — most notably multimap `regexp_rules`, as well as scopes registered by Lua plugins — were matched against unbounded input. Named scopes now inherit the default scope's limit, and changing the limit updates every registered scope ([5c6644a](https://github.com/rspamd/rspamd/commit/5c6644a67)).
+
+**Who is affected:** Deployments with multimap `regexp_rules` (or custom plugins using named regexp scopes) that relied on matching content beyond 1 MiB. Such rules will silently stop hitting on data past the limit after the upgrade.
+
+**What to do:** If you legitimately need to match larger inputs, raise the limit in the `regexp` section of your configuration:
+
+~~~hcl
+# local.d/options.inc
+regexp {
+  max_size = 5242880; # 5 MiB; the default is 1 MiB
+}
+~~~
+
+### 4. Word Retention Is Now Bounded for Very Large Messages
+
+The UTF tokenizer now drops decayed words instead of retaining them, matching the long-standing behaviour of the raw tokenizer, and a message-wide budget (100k words, 1 MiB of text, shared by all text parts and the meta words) has been introduced. Parts that hit the budget are flagged as truncated and the message is logged once ([03a38dc](https://github.com/rspamd/rspamd/commit/03a38dc84)).
+
+**Who is affected:** Deployments processing messages with very large text parts. Word-class regexps and part similarity (fuzzy shingle) hashes no longer see the decayed words of large UTF text parts, so fuzzy hashes learned from such texts before 4.1.4 may stop matching, and Bayes token sets for those messages change. Ordinary-sized mail is unaffected — the decay only kicks in for parts of roughly a thousand words and more.
+
+**What to do:** No configuration change is required or available. If you operate a fuzzy storage and have hashes learned from very large text parts, expect a one-time drift and re-learn the affected patterns after the upgrade.
+
+### 5. WebUI Read-Only Password Grants Access to Errors History and Selectors
+
+This is an access-control relaxation rather than a breakage, but it changes what the read-only (`password`) credential grants. Read-only users can now view the Errors history tab (`/errors`: Rspamd's internal operational error log — timestamps, pids, modules, messages) and use the Selectors tab catalogs (`list_extractors`, `list_transforms`, `check_selector`). `check_message` remains restricted to the privileged `enable_password` ([#6156](https://github.com/rspamd/rspamd/pull/6156), [#6157](https://github.com/rspamd/rspamd/pull/6157), [3edd7d7](https://github.com/rspamd/rspamd/commit/3edd7d7d5), [d6b6769](https://github.com/rspamd/rspamd/commit/d6b6769f0)).
+
+**Who is affected:** Deployments that share the read-only password with semi-trusted users and assumed these endpoints stayed hidden behind the privileged password.
+
+**What to do:** There is no option to restore the previous gating. Audit who holds the read-only password and rotate it if this additional visibility is not acceptable for those users.
