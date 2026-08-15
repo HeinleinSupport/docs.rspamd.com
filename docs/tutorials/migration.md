@@ -1356,3 +1356,117 @@ This is an access-control relaxation rather than a breakage, but it changes what
 **Who is affected:** Deployments that share the read-only password with semi-trusted users and assumed these endpoints stayed hidden behind the privileged password.
 
 **What to do:** There is no option to restore the previous gating. Audit who holds the read-only password and rotate it if this additional visibility is not acceptable for those users.
+
+## Migration to Rspamd 4.1.5
+
+### 1. Upgrade Self-Hosted Fuzzy Storages Before Scanners
+
+Rspamd 4.1.5 scanners attach a new sender-facts extension to fuzzy commands on every rule that shares extensions, i.e. a rule with encryption configured and without `no_share = true` ([856fa42](https://github.com/rspamd/rspamd/commit/856fa4290), [#6179](https://github.com/rspamd/rspamd/pull/6179)). The extensions wire format was not forward compatible before this release: a storage older than 4.1.5 cannot skip an unknown extension type and rejects the whole command, so the client receives no fuzzy reply at all ([4ab21b1](https://github.com/rspamd/rspamd/commit/4ab21b113)).
+
+**Who is affected:** Deployments running their own fuzzy storage that scanners reach over encrypted rules. Users of the public rspamd.com storage do not need to do anything.
+
+**Migration procedure:**
+
+1. Upgrade all fuzzy storage nodes to 4.1.5 first. The storage-side parser change is backward compatible, so an upgraded storage keeps serving older clients.
+2. Upgrade the scanners.
+3. If a storage cannot be upgraded first, temporarily disable extension sharing on the scanners for that rule:
+
+~~~hcl
+# local.d/fuzzy_check.conf, inside the affected rule
+no_share = true;
+~~~
+
+Note also that scanners no longer send extensions for authenticated senders, for senders in `local_addrs`, or on rules that talk to the storage in plain text ([2d7db91](https://github.com/rspamd/rspamd/commit/2d7db917c)). If your storage consumed the sender IP extension over an unencrypted transport, it stops arriving; enable encryption on the rule to get it back.
+
+### 2. Fuzzy Storage: Per-Key `forbidden_ids` Replaces the Global List Again
+
+Since [6d15756](https://github.com/rspamd/rspamd/commit/6d15756b1), the global `forbidden_ids` worker option was applied even to clients whose key carries its own `forbidden_ids` ACL, so a key with an explicitly empty ACL (meaning "nothing is forbidden for this key") still had the globally listed flags suppressed. 4.1.5 restores the original semantics: a key that defines `forbidden_ids` — even an empty list — is governed by that list alone, and the worker-level option is only a default for keys without an ACL of their own ([e0e92d6](https://github.com/rspamd/rspamd/commit/e0e92d6f5)). The same rule now also applies to delayed replies to older protocol clients ([a47a858](https://github.com/rspamd/rspamd/commit/a47a85801)).
+
+**Who is affected:** Fuzzy storage operators using per-key `forbidden_ids` together with the worker-level `forbidden_ids` who relied on the (unintended) additive behaviour of recent releases.
+
+If a key must still be denied the globally forbidden flags, add those flag IDs to that key's own `forbidden_ids` list explicitly.
+
+### 3. Fuzzy Storage: `encrypted_only` No Longer Exempts "Local" Peers
+
+The `encrypted_only` option used to skip the encryption requirement for peers with a "local" source address. That test also matched IPv6 link-local and site-local addresses, so any host on the same segment could send plaintext commands; the exemption is removed, and unencrypted requests are now refused regardless of the source address ([5c52b37](https://github.com/rspamd/rspamd/commit/5c52b376e)).
+
+**Who is affected:** Fuzzy storages running with `encrypted_only = true` that have clients — including ones on localhost — talking to them without encryption.
+
+Configure the storage's public key (`encryption_key`) in the `fuzzy_check` rule of every such client, or remove `encrypted_only` from `local.d/worker-fuzzy.inc`.
+
+### 4. GPT Plugin: `condition` Callback Returns Only a Verdict
+
+The custom `condition` callback of the `gpt` module previously had to return both the decision and the content submitted to the LLM. It now returns only a boolean plus an optional reason string, and the request content is generated inside the module itself ([c5ee174](https://github.com/rspamd/rspamd/commit/c5ee17495), [#6159](https://github.com/rspamd/rspamd/pull/6159), see [#5857](https://github.com/rspamd/rspamd/issues/5857)). A callback still returning content will have that content ignored.
+
+**Who is affected:** Anyone with a custom `condition` in `local.d/gpt.conf`.
+
+Rewrite the callback to return just the decision:
+
+~~~hcl
+condition = <<EOD
+return function(task)
+  local result = task:get_metric_result()
+  if result then
+    local score = result.score
+    if score < 2.0 or score > 8.0 then
+      return false, 'score outside the checked range'
+    end
+  end
+  return true
+end
+EOD
+~~~
+
+### 5. Elastic Module: New Document Schema for Fuzzy Results
+
+The flat `fuzzy_hashes` field is replaced by structured per-match objects taken from `task:get_fuzzy_results()`, carrying `rule`, `symbol`, `found`, `queried`, `type`, `prob`, `flag` and `exact`; the new `fuzzy_nested` module option switches that field to the Elasticsearch `nested` type. Message `size` is now exported with an explicit mapping as well ([2fbbb4d](https://github.com/rspamd/rspamd/commit/2fbbb4daa), [#6154](https://github.com/rspamd/rspamd/pull/6154), [#6136](https://github.com/rspamd/rspamd/issues/6136), [#6147](https://github.com/rspamd/rspamd/issues/6147)).
+
+**Who is affected:** Users of the `elastic` module with saved searches, dashboards or ingest pipelines referencing `fuzzy_hashes`.
+
+**Migration procedure:**
+
+1. Update queries and visualisations to the new structured field.
+2. The updated mapping applies to indices created after the upgrade; documents in pre-upgrade indices keep the old shape, so anything spanning the upgrade date must handle both.
+3. Set `fuzzy_nested = true` in `local.d/elastic.conf` if you need to query several attributes of a single match together.
+
+### 6. File and Shared-Memory Message Inputs Are Now Gated
+
+The `File`/`Path`/`Shm`/`Shm-Offset`/`Shm-Length` headers, their v3 metadata equivalents and the proxy's `File` query argument make rspamd open a path or map a shared-memory object named by the client. A new per-worker boolean `allow_file_and_shm_inputs` on the normal, controller and proxy workers now gates them: connections accepted on a unix socket always keep the capability, while TCP connections have it only while the option is enabled ([5c52b37](https://github.com/rspamd/rspamd/commit/5c52b376e)).
+
+For 4.1.5 the shipped default is `true`, so nothing changes out of the box, but every TCP listener logs a startup warning while the option is enabled, and **the default becomes `false` in the next major release** ([d1adb29](https://github.com/rspamd/rspamd/commit/d1adb29ac)). Independently of the option, the proxy now strips client-supplied `Shm*` headers and the `File`/`Path`/`Shm` query arguments, so scanning local files *through* `rspamd_proxy` no longer works — such clients must talk to a scanner listener directly.
+
+**Who is affected:** Setups where clients pass file paths or shared memory instead of the message body over TCP. Typical MTA integrations, which send the message body, are not affected.
+
+If no client of a worker uses these inputs, opt in to the future default now and silence the warning:
+
+~~~hcl
+# local.d/worker-normal.inc (likewise worker-controller.inc, worker-proxy.inc)
+allow_file_and_shm_inputs = false;
+~~~
+
+Otherwise move such clients to a unix socket, or keep the option enabled only on listeners not exposed to untrusted networks — passwords, `secure_ip` and connection encryption deliberately do not unlock this capability.
+
+The same change set adds `max_connections` and `max_connections_per_source` limits to the controller and proxy, and the scanner's `max_tasks` now counts accepted connections that are still sending their body, so saturated scanners may hit the limit earlier than before.
+
+### 7. Controller Rate-Limits Failed Authentications
+
+The controller now throttles password failures per source: after 10 failed attempts within 60 seconds, further requests from that source get HTTP 429 until the window drains. A successful login clears the counter, and trusted sources (`secure_ip` matches and unix-socket clients) are never throttled ([18fc619](https://github.com/rspamd/rspamd/commit/18fc61992)).
+
+**Who is affected:** Deployments with monitoring or scripts that poll the controller with a wrong password, and setups behind a reverse proxy, where all clients share the proxy's source address and therefore one bucket.
+
+Fix misconfigured clients, or tune the limits:
+
+~~~hcl
+# local.d/worker-controller.inc
+max_auth_failures = 10;    # 0 disables throttling
+auth_failure_window = 60s;
+~~~
+
+### 8. Previously Broken Checks Now Fire and Can Change Scores
+
+Two long-standing bugs are fixed in ways that change symbol hit rates:
+
+- `url:get_urls_filtered()` called without an include list — and therefore `rspamadm mime urls` and the `URI_COUNT_ODD` rule — no longer drops URLs that carry no flags, which is exactly what URLs extracted from HTML parts are. `URI_COUNT_ODD` was running its parity check on an undercount for the multipart/alternative messages it targets ([81256c9](https://github.com/rspamd/rspamd/commit/81256c96a), [#5891](https://github.com/rspamd/rspamd/issues/5891), [#6182](https://github.com/rspamd/rspamd/pull/6182)).
+- `HFILTER_HELO_IP_A` now fires when the HELO hostname resolves to addresses that do not include the connecting IP, as documented. Previously it fired only when the HELO resolved to no addresses at all, a condition already covered by `HFILTER_HELO_NORES_A_OR_MX` ([5f5c176](https://github.com/rspamd/rspamd/commit/5f5c176d6), [#6176](https://github.com/rspamd/rspamd/pull/6176), [#6165](https://github.com/rspamd/rspamd/issues/6165)).
+
+No configuration change is required, but review local score overrides and composites involving these symbols after the upgrade if your scoring depends on them.
