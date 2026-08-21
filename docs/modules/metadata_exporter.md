@@ -97,6 +97,60 @@ The following settings can be defined on any rule:
  - `defer`: if true, `soft reject` action is forced on failed processing
  - `timeout`: defines module timeout (default: '5s')
 
+### Selectors and custom variables in rule options
+
+*Available since version 4.1*
+
+A small set of per-message routing options can reference a [selector](/configuration/selectors) or a user-defined custom variable instead of (or in addition to) a literal value. Two placeholder forms are recognized inside the value of a supported option:
+
+ - `$name` — expands to the value returned by a custom variable named `name`
+ - `${expr}` — expands to the value returned by a custom variable named `expr`, or, if no such variable is defined, evaluates `expr` as a selector expression
+
+Custom variables are defined in the `custom_variables` group and referenced by name, similarly to `custom_select`/`custom_format`/`custom_push`:
+
+~~~hcl
+metadata_exporter {
+  custom_variables {
+    alert_mailbox = "return function(task) return 'security@example.com' end";
+  }
+
+  rules {
+    MY_EMAIL_1 {
+      backend = "send_mail";
+      smtp = "127.0.0.1";
+      mail_to = "$alert_mailbox";
+      selector = "is_reject_authed";
+      formatter = "email_alert";
+    }
+  }
+}
+~~~
+
+Each custom variable is a Lua function that receives the `task` object and returns a string (or a list of strings).
+
+#### Options that support expansion
+
+Only the following options accept `$name`/`${expr}` placeholders:
+
+ - `mail_from`, `mail_to`, `helo` (`send_mail` backend)
+ - `channel` (`redis_pubsub` backend)
+ - `stream_key` (`redis_stream` backend)
+ - the `email_template` body (`email_alert` formatter)
+
+`mail_to` additionally accepts a list mixing literal addresses and placeholders:
+
+~~~hcl
+mail_to = ["${rcpts:addr}", "backup@example.com"];
+~~~
+
+Expanded email addresses are parsed and validated; any result that is not a valid address is dropped and logged rather than being sent.
+
+All other options — including `url`, `host`, `port`, `smtp`, `smtp_port`, `user`, `password`, `mime_type`, `meta_header_prefix`, every `*_timeout` setting, `max_len`, and all boolean flags — are always taken literally and are never expanded, even if their configured value happens to contain a `$` character. This is intentional: message-derived data may influence *who* receives an alert, but never *where* a rule connects or *how* it authenticates.
+
+Expanded values are also sanitized: any CR/LF sequence is collapsed to a single space, so a hostile selector result cannot inject extra SMTP commands, mail headers, or Redis protocol framing.
+
+Within `email_template`, the same placeholders can additionally reference the general metadata keys described below (e.g. `$mail_from`, `$user`, `$score`). Metadata keys take priority over custom variables and selectors of the same name.
+
 ### Settings: `http` backend
 
  - `url` (required): defines the URL to post content to
@@ -114,7 +168,7 @@ The following settings can be defined on any rule:
 
 ### Settings: `redis_pubsub` backend
 
- - `channel` (required): defines Pub/Sub channel to post content to
+ - `channel` (required): defines Pub/Sub channel to post content to (supports `$name`/`${expr}` placeholders, 4.1+)
 
 See [here](/configuration/redis) for information on configuring Redis servers.
 
@@ -122,7 +176,7 @@ See [here](/configuration/redis) for information on configuring Redis servers.
 
 *Available since version 4.0*
 
- - `stream_key` (required): defines Redis Stream key to append content to
+ - `stream_key` (required): defines Redis Stream key to append content to (supports `$name`/`${expr}` placeholders, 4.1+)
  - `max_len`: optional maximum length for the stream (uses `MAXLEN ~` for approximate trimming)
  - `per_recipient`: if `true`, creates per-recipient streams by appending `:recipient@address` to `stream_key`
 
@@ -144,13 +198,14 @@ When `send_mail` backend is used in conjunction with `email_alert` formatter, th
 <mark>To prevent <b>looping</b>, it is essential to ensure that email messages from the Metadata exporter are <b>not scanned</b> by Rspamd.</mark> This can be achieved by setting up a specific Postfix Transport to bypass Rspamd, or by allowing the recipient of the `email_alert` to receive spam.
 
  - `smtp` (required): hostname of SMTP server
- - `mail_to` (required): recipient of e-mail alert
- - `mail_from`: Sender address (default empty)
+ - `mail_to` (required): recipient of e-mail alert. May be a literal address, a `$name`/`${expr}` placeholder (4.1+), or a list combining any of these forms
+ - `mail_from`: Sender address (default empty; supports `$name`/`${expr}` placeholders, 4.1+)
  - `email_alert_user` (1.7.0+, default false): Send a copy of the alert to the authenticated SMTP username
  - `email_alert_sender` (1.7.0+, default false): Send a copy of the alert to the SMTP sender (NB: please ensure that it can be trusted)
+ - `email_alert_sender_variable` (4.1+): Send a copy of the alert to the address returned by the named custom variable
  - `email_alert_recipients` (1.7.0+, default false): Send a copy of the alert to SMTP recipients (NB: please ensure they can be trusted; don't use this?)
  - `email_template`: template used for alert (default shown below)
- - `helo`: HELO to send (default 'rspamd')
+ - `helo`: HELO to send (default 'rspamd'; supports `$name`/`${expr}` placeholders, 4.1+)
  - `smtp_port`: SMTP port if not 25
 
 The default value for `email_template` is as follows:
@@ -200,8 +255,25 @@ Metadata as returned by the `json` formatter can be referenced by key in `email_
 - `qid`: Queue-ID of message provided by MTA
 - `rcpt`: SMTP RCPT
 - `score`: Metric score of the message
-- `symbols`: Symbols in metric
+- `symbols`: Symbols in metric, in their natural (unordered) evaluation order
+- `symbols_sorted` (`email_template` only): Symbols in metric, sorted alphabetically by name
+- `symbols_score` (`email_template` only): Symbols in metric, sorted by score (highest first)
 - `user`: authenticated username of message sender
+- `subject`: Subject of the message as parsed by Rspamd
+- `rspamd_server`: hostname of the Rspamd instance that processed the message
+- `fuzzy`: comma-separated list of fuzzy hashes matched for the message, if any
+- `scan_time`: message scan time in milliseconds
+- `size`: message size in bytes
+- `date` (`email_template` only): current date/time, formatted for use in a `Date:` header
+
+### Predefined template variables
+
+In addition to the general metadata keys above, the following predefined variables are always available for `$name`/`${name}` substitution in `email_template` (they live in the same namespace as [custom variables](#selectors-and-custom-variables-in-rule-options), so a `custom_variables` entry with the same name overrides the built-in one):
+
+ - `content`: the raw content of the original message. This is what lets you attach the original message to an alert, e.g. as a `message/rfc822` MIME part (see the example below)
+ - `uid`: the first 6 characters of the internal Rspamd task UID
+ - `local_date`: current local date/time, formatted with `%c` (e.g. `Sat Aug 22 10:00:00 2026`)
+ - `our_boundary`: a random MIME boundary string, generated once per alert, for building a multipart `email_template`
 
 ### Custom functions
 
@@ -255,6 +327,65 @@ EOD;
 ~~~
 
 ### Examples
+
+#### Email alert with the original message attached as `message/rfc822`
+
+This example builds a multipart e-mail alert with the `send_mail` backend and `email_alert` formatter: a plain-text summary of the scan result, plus the original message attached as a `message/rfc822` part using the predefined `$content` and `$our_boundary` variables.
+
+~~~hcl
+metadata_exporter {
+
+  rules {
+
+    SPAM_WITH_ORIGINAL {
+      backend = "send_mail";
+      smtp = "127.0.0.1";
+      mail_from = "postmaster@example.com";
+      mail_to = "security@example.com";
+      selector = "is_reject_authed";
+      formatter = "email_alert";
+      email_template = 'From: "Rspamd" <$mail_from>
+To: $mail_to
+Subject: [SPAM $score] $header_subject
+Date: $date
+MIME-Version: 1.0
+Message-ID: <$our_message_id>
+Content-Type: multipart/mixed;
+ boundary="$our_boundary"; charset=utf-8
+
+This is a multi-part message in MIME format.
+--$our_boundary
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Authenticated username: $user
+IP: $ip
+Queue ID: $qid
+SMTP FROM: $from
+SMTP RCPT: $rcpt
+Action: $action
+Score: $score
+Symbols: $symbols_sorted
+
+--$our_boundary
+Content-Type: message/rfc822;
+ name="$qid.eml"
+Content-Transfer-Encoding: 8bit
+Content-Disposition: attachment;
+ filename="$qid.eml"
+
+$content
+
+--$our_boundary
+';
+    }
+
+  }
+
+}
+~~~
+
+Note that `content` is the raw, unmodified message, so `$content` must be placed in the template as-is, without any additional encoding. Also remember the looping warning above: the mailbox receiving this alert must not be re-scanned by Rspamd, or the attached original message could trigger the rule again.
 
 #### Python Receiver for `multipart` formatter
 
