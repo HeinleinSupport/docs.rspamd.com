@@ -22,6 +22,7 @@ The following elements are valid in the rules of this module:
  - `limit`: minimum expression score required to trigger the action (default: 0)
  - `least`: if true, use the least significant action when multiple rules match
  - `process_all`: if true, continue processing other rules even after a match
+ - `priority`: passthrough priority used to arbitrate between multiple matching rules (default: `normal`); accepts `low`, `normal`, `high`, `critical`, or the equivalent numeric values `0`-`3`
 
 Only one of `honor_action` or `require_action` should be set on a given rule.
 
@@ -35,9 +36,17 @@ Each rule named `MY_RULE` produces a registered symbol called `FORCE_ACTION_MY_R
 
 ### Execution Order
 
-If neither `require_action` nor `honor_action` is specified, the respective force action symbol is registered as a normal filter with a dependency on all symbols referenced in `expression`.
-If at least one of `require_action` or `honor_action` is specified, the respective force action symbol is registered as a post filter.
+If neither `require_action` nor `honor_action` is specified and `expression` does not reference a [composite](/configuration/composites#composite-expressions), the respective force action symbol is registered as a normal filter with a dependency on all symbols referenced in `expression`.
+If at least one of `require_action` or `honor_action` is specified, or `expression` references a composite, the respective force action symbol is registered as a post filter.
 For example, this is important if you want to revert an action that is decided upon the total score, as the action is only updated once all normal filters are completed.
+
+Composites are only resolved after normal filters have run, so a rule cannot depend on one directly; it is auto-promoted to a postfilter instead. A rule promoted this way is still skipped if an earlier rule already set a pre-result without `process_all`, since that stops composite evaluation entirely — set `process_all = true` on whichever rule fires first in that case.
+
+### Priority
+
+When more than one rule matches for the same message, `priority` decides which one wins: the highest-priority match is applied regardless of registration order. Available priorities, from lowest to highest, are `low` (`0`), `normal` (`1`), `high` (`2`) and `critical` (`3`). Rules without an explicit `priority` default to `normal`.
+
+An invalid `priority` (not one of the named values or a number, a fractional value, a value outside `0`-`3`, or `NaN`) is logged as a warning and the rule falls back to the default priority. Setting `priority` together with `least` also logs a warning, since a `least` rule can never outrank a non-`least` result — `priority` then only affects ordering among other `least` rules.
 
 ### Legacy configuration
 
