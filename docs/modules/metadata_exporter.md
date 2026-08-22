@@ -207,6 +207,7 @@ When `send_mail` backend is used in conjunction with `email_alert` formatter, th
  - `email_template`: template used for alert (default shown below)
  - `helo`: HELO to send (default 'rspamd'; supports `$name`/`${expr}` placeholders, 4.1+)
  - `smtp_port`: SMTP port if not 25
+ - `email_auto_encode_headers` (4.1+, default true): automatically RFC 2047-encode non-ASCII header values produced by `email_template` when using the `email_alert` formatter; see [Automatic header encoding](#automatic-header-encoding) below
 
 The default value for `email_template` is as follows:
 
@@ -236,6 +237,17 @@ Symbols: $symbols
 ~~~
 
 Variables can be substituted according to general metadata keys described in the next section.
+
+#### Automatic header encoding
+
+*Available since version 4.1*
+
+When the `email_alert` formatter is used, the fully rendered `email_template` output is post-processed to ensure its text headers are valid MIME. Non-ASCII text is RFC 2047-encoded whether it came from a literal character typed directly into `email_template` or from an expanded metadata key/selector/custom variable.
+
+ - Address-list headers (`From`, `To`, `Cc`, `Bcc`, `Sender`, `Reply-To`, `Resent-From`, `Resent-To`, `Resent-Cc`, `Resent-Bcc`, `Resent-Sender`) are parsed per address: only a non-ASCII display name is encoded, and the `<addr>` part is always left untouched. Group syntax and comments are preserved unchanged because the address parser cannot reconstruct them losslessly.
+ - Unstructured text headers are folded and RFC 2047-encoded. Structured fields such as `Content-Type`, `Content-Disposition`, `Message-ID`, `Date`, `Received`, and signature/authentication headers are folded but not RFC 2047-encoded, because encoded-words are not valid in those field bodies.
+ - Only the header block is touched; the message body is never modified. Raw UTF-8 body text should use a matching declaration such as `Content-Type: text/plain; charset=utf-8` with `Content-Transfer-Encoding: 8bit`. If the template declares `quoted-printable` or `base64`, its body must already use that encoding.
+ - Set `email_auto_encode_headers = false` on the rule to disable this behavior and send headers exactly as rendered.
 
 ### General metadata
 
