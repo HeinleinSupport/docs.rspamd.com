@@ -208,6 +208,8 @@ When `send_mail` backend is used in conjunction with `email_alert` formatter, th
  - `helo`: HELO to send (default 'rspamd'; supports `$name`/`${expr}` placeholders, 4.1+)
  - `smtp_port`: SMTP port if not 25
  - `email_auto_encode_headers` (4.1+, default true): automatically RFC 2047-encode non-ASCII header values produced by `email_template` when using the `email_alert` formatter; see [Automatic header encoding](#automatic-header-encoding) below
+ - `email_parts` (4.1+): builds a `multipart/<email_parts_type>` alert without hand-crafting boundaries in `email_template`; see [Multipart alerts with email_parts](#multipart-alerts-with-email_parts) below
+ - `email_parts_type` (4.1+, default `mixed`): multipart subtype used for the wrapper built by `email_parts`, e.g. `mixed`, `alternative`, `related`
 
 The default value for `email_template` is as follows:
 
@@ -248,6 +250,65 @@ When the `email_alert` formatter is used, the fully rendered `email_template` ou
  - Unstructured text headers are folded and RFC 2047-encoded. Structured fields such as `Content-Type`, `Content-Disposition`, `Message-ID`, `Date`, `Received`, and signature/authentication headers are folded but not RFC 2047-encoded, because encoded-words are not valid in those field bodies.
  - Only the header block is touched; the message body is never modified. Raw UTF-8 body text should use a matching declaration such as `Content-Type: text/plain; charset=utf-8` with `Content-Transfer-Encoding: 8bit`. If the template declares `quoted-printable` or `base64`, its body must already use that encoding.
  - Set `email_auto_encode_headers = false` on the rule to disable this behavior and send headers exactly as rendered.
+
+#### Multipart alerts with `email_parts`
+
+*Available since version 4.1*
+
+Setting `email_parts` on a rule turns the `email_alert` formatter's output into a `multipart/<email_parts_type>` message without having to hand-craft a boundary and part framing inside `email_template`: the boundary is generated automatically, `email_template`'s own body (together with whatever `Content-Type`/`Content-Transfer-Encoding` it declares) becomes the first part, and one additional part is built for each `email_parts` entry.
+
+`email_parts` is an array of tables, each describing one part:
+
+ - `variable` (required): name of a [custom variable](#selectors-and-custom-variables-in-rule-options) or a [predefined template variable](#predefined-template-variables) (e.g. `content`) supplying the part body. Table results are flattened one line per element.
+ - `content_type` (required): MIME type of the part, e.g. `message/rfc822` or `application/zip`
+ - `filename`: optional attachment file name; supports `$name`/`${expr}` placeholders and is RFC 2231-encoded when non-ASCII or long
+ - `disposition`: `inline` or `attachment` (default: `attachment` if `filename` is set, otherwise `inline`)
+ - `encoding`: `auto` (default), `base64`, `quoted-printable`, `7bit`, or `8bit`. With `auto`, `text/*` parts use `8bit` or `quoted-printable` depending on their content, and any other part uses `base64`. An explicit `7bit`/`8bit` that would not survive the wire as-is (non-ASCII for `7bit`, NUL bytes or over-long lines for either) is downgraded to `quoted-printable`.
+
+~~~hcl
+metadata_exporter {
+
+  rules {
+
+    SPAM_WITH_ORIGINAL {
+      backend = "send_mail";
+      smtp = "127.0.0.1";
+      mail_from = "postmaster@example.com";
+      mail_to = "security@example.com";
+      selector = "is_reject_authed";
+      formatter = "email_alert";
+      email_template = 'From: "Rspamd" <$mail_from>
+To: $mail_to
+Subject: [SPAM $score] $header_subject
+Date: $date
+MIME-Version: 1.0
+Message-ID: <$our_message_id>
+
+Authenticated username: $user
+IP: $ip
+Queue ID: $qid
+SMTP FROM: $from
+SMTP RCPT: $rcpt
+Action: $action
+Score: $score
+Symbols: $symbols_sorted
+';
+      email_parts = [
+        {
+          variable = "content";
+          content_type = "message/rfc822";
+          filename = "$qid.eml";
+          disposition = "attachment";
+        }
+      ];
+    }
+
+  }
+
+}
+~~~
+
+Note that `content` is the raw, unmodified message; `email_parts` takes care of choosing a safe transfer encoding for it, so it does not need any encoding declaration in `email_template` itself. Also remember the looping warning above: the mailbox receiving this alert must not be re-scanned by Rspamd, or the attached original message could trigger the rule again.
 
 ### General metadata
 
@@ -339,65 +400,6 @@ EOD;
 ~~~
 
 ### Examples
-
-#### Email alert with the original message attached as `message/rfc822`
-
-This example builds a multipart e-mail alert with the `send_mail` backend and `email_alert` formatter: a plain-text summary of the scan result, plus the original message attached as a `message/rfc822` part using the predefined `$content` and `$our_boundary` variables.
-
-~~~hcl
-metadata_exporter {
-
-  rules {
-
-    SPAM_WITH_ORIGINAL {
-      backend = "send_mail";
-      smtp = "127.0.0.1";
-      mail_from = "postmaster@example.com";
-      mail_to = "security@example.com";
-      selector = "is_reject_authed";
-      formatter = "email_alert";
-      email_template = 'From: "Rspamd" <$mail_from>
-To: $mail_to
-Subject: [SPAM $score] $header_subject
-Date: $date
-MIME-Version: 1.0
-Message-ID: <$our_message_id>
-Content-Type: multipart/mixed;
- boundary="$our_boundary"; charset=utf-8
-
-This is a multi-part message in MIME format.
---$our_boundary
-Content-Type: text/plain; charset=utf-8
-Content-Transfer-Encoding: 8bit
-
-Authenticated username: $user
-IP: $ip
-Queue ID: $qid
-SMTP FROM: $from
-SMTP RCPT: $rcpt
-Action: $action
-Score: $score
-Symbols: $symbols_sorted
-
---$our_boundary
-Content-Type: message/rfc822;
- name="$qid.eml"
-Content-Transfer-Encoding: 8bit
-Content-Disposition: attachment;
- filename="$qid.eml"
-
-$content
-
---$our_boundary
-';
-    }
-
-  }
-
-}
-~~~
-
-Note that `content` is the raw, unmodified message, so `$content` must be placed in the template as-is, without any additional encoding. Also remember the looping warning above: the mailbox receiving this alert must not be re-scanned by Rspamd, or the attached original message could trigger the rule again.
 
 #### Python Receiver for `multipart` formatter
 
