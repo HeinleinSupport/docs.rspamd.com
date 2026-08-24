@@ -257,13 +257,17 @@ When the `email_alert` formatter is used, the fully rendered `email_template` ou
 
 Setting `email_parts` on a rule turns the `email_alert` formatter's output into a `multipart/<email_parts_type>` message without having to hand-craft a boundary and part framing inside `email_template`: the boundary is generated automatically, `email_template`'s own body (together with whatever `Content-Type`/`Content-Transfer-Encoding` it declares) becomes the first part, and one additional part is built for each `email_parts` entry.
 
-`email_parts` is an array of tables, each describing one part:
+`email_parts` is an array of tables, each describing one part. Always write multiple parts as a single array (`email_parts = [ {...}, {...} ]`) — repeated `email_parts { ... }` blocks are not appended, UCL merges them into one object and silently corrupts the rule.
 
- - `variable` (required): name of a [custom variable](#selectors-and-custom-variables-in-rule-options) or a [predefined template variable](#predefined-template-variables) (e.g. `content`) supplying the part body. Table results are flattened one line per element.
- - `content_type` (required): MIME type of the part, e.g. `message/rfc822` or `application/zip`
+ - `content`: literal/template text for the part body — a string, or an array of strings joined with newlines — expanded via [selectors and custom variables](#selectors-and-custom-variables-in-rule-options) exactly like the `email_template` body
+ - `content_from_variables`: name, or array of names joined with newlines, of a [custom variable](#selectors-and-custom-variables-in-rule-options) or [predefined template variable](#predefined-template-variables) supplying the *raw, unexpanded* part body — use this for binary data or the original message
+ - Exactly one of `content` or `content_from_variables` must be set per part; setting both, or neither, is a configuration error and the rule is disabled
+ - `content_type`: MIME type of the part, e.g. `message/rfc822` or `application/zip` (default: `text/plain; charset=utf-8` for `content`, `application/octet-stream` for `content_from_variables`)
  - `filename`: optional attachment file name; supports `$name`/`${expr}` placeholders and is RFC 2231-encoded when non-ASCII or long
  - `disposition`: `inline` or `attachment` (default: `attachment` if `filename` is set, otherwise `inline`)
  - `encoding`: `auto` (default), `base64`, `quoted-printable`, `7bit`, or `8bit`. With `auto`, `text/*` parts use `8bit` or `quoted-printable` depending on their content, and any other part uses `base64`. An explicit `7bit`/`8bit` that would not survive the wire as-is (non-ASCII for `7bit`, NUL bytes or over-long lines for either) is downgraded to `quoted-printable`.
+
+Any unrecognized key in an `email_parts` entry (or elsewhere in the rule) is rejected when the configuration is loaded: the rule is disabled, and the error is logged and reported to `rspamadm configtest`.
 
 ~~~hcl
 metadata_exporter {
@@ -295,7 +299,7 @@ Symbols: $symbols_sorted
 ';
       email_parts = [
         {
-          variable = "content";
+          content_from_variables = "content";
           content_type = "message/rfc822";
           filename = "$qid.eml";
           disposition = "attachment";
@@ -308,7 +312,7 @@ Symbols: $symbols_sorted
 }
 ~~~
 
-Note that `content` is the raw, unmodified message; `email_parts` takes care of choosing a safe transfer encoding for it, so it does not need any encoding declaration in `email_template` itself. Also remember the looping warning above: the mailbox receiving this alert must not be re-scanned by Rspamd, or the attached original message could trigger the rule again.
+Note that `content` here refers to the [predefined template variable](#predefined-template-variables) of the same name, i.e. the raw, unmodified message; `email_parts` takes care of choosing a safe transfer encoding for it, so it does not need any encoding declaration in `email_template` itself. Also remember the looping warning above: the mailbox receiving this alert must not be re-scanned by Rspamd, or the attached original message could trigger the rule again.
 
 ### General metadata
 
