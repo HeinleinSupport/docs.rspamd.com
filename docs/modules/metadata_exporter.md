@@ -210,6 +210,7 @@ When `send_mail` backend is used in conjunction with `email_alert` formatter, th
  - `email_auto_encode_headers` (4.1+, default true): automatically RFC 2047-encode non-ASCII header values produced by `email_template` when using the `email_alert` formatter; see [Automatic header encoding](#automatic-header-encoding) below
  - `email_parts` (4.1+): builds a `multipart/<email_parts_type>` alert without hand-crafting boundaries in `email_template`; see [Multipart alerts with email_parts](#multipart-alerts-with-email_parts) below
  - `email_parts_type` (4.1+, default `mixed`): multipart subtype used for the wrapper built by `email_parts`, e.g. `mixed`, `alternative`, `related`
+ - `auto_grouping` (4.1+, default `true`): automatically wraps a `text/plain` + `text/html` pair among `email_template`'s body and the `email_parts` entries in a nested `multipart/alternative`; see [Auto-grouping plain/html into multipart/alternative](#auto-grouping-plainhtml-into-multipartalternative) below
 
 The default value for `email_template` is as follows:
 
@@ -313,6 +314,72 @@ Symbols: $symbols_sorted
 ~~~
 
 Note that `content` here refers to the [predefined template variable](#predefined-template-variables) of the same name, i.e. the raw, unmodified message; `email_parts` takes care of choosing a safe transfer encoding for it, so it does not need any encoding declaration in `email_template` itself. Also remember the looping warning above: the mailbox receiving this alert must not be re-scanned by Rspamd, or the attached original message could trigger the rule again.
+
+##### Auto-grouping plain/html into `multipart/alternative`
+
+*Available since version 4.1*
+
+When exactly one inline, unnamed `text/plain` part and one inline, unnamed `text/html` part are found among `email_template`'s own body and the `email_parts` entries, they automatically form a `multipart/alternative`, with the `text/plain` part first and the `text/html` part second (per RFC 2046 §5.1.4, readers should show the last alternative they understand, so the richest version goes last). If no other parts exist, that container is the top-level message; otherwise it is nested inside the outer `multipart/<email_parts_type>`, where any other parts (e.g. attachments) remain as siblings. A part is considered for grouping only if it has no `filename` and its `disposition` is `inline` (case-insensitive; the default when no `filename` is set). An explicit `content_type` other than `text/plain`/`text/html`, any `filename`, or any disposition other than `inline` always excludes a part from grouping.
+
+If more than one `text/plain` or more than one `text/html` candidate part would end up in the same rule, that is ambiguous and rejected as a configuration error (the rule is disabled) — merge the duplicates into a single part using an array `content`/`content_from_variables` value, or set `auto_grouping = false` on the rule to keep every part flat inside `multipart/<email_parts_type>` instead.
+
+Set `auto_grouping = false` to disable this behavior entirely and always emit a flat `multipart/<email_parts_type>` structure.
+
+The example below relies entirely on `email_parts` for the body — note that `email_template` has no body of its own after the headers, so it never becomes a candidate part itself:
+
+~~~hcl
+metadata_exporter {
+
+  rules {
+
+    SPAM_ALTERNATIVE_BODY {
+      backend = "send_mail";
+      smtp = "127.0.0.1";
+      mail_from = "postmaster@example.com";
+      mail_to = "security@example.com";
+      selector = "is_reject_authed";
+      formatter = "email_alert";
+      email_template = 'From: "Rspamd" <$mail_from>
+To: $mail_to
+Subject: [SPAM $score] $header_subject
+Date: $date
+MIME-Version: 1.0
+Message-ID: <$our_message_id>
+';
+      email_parts = [
+        {
+          content = [
+            "Authenticated username: $user",
+            "IP: $ip",
+            "Queue ID: $qid",
+            "Action: $action",
+            "Score: $score",
+            "Symbols: $symbols_sorted"
+          ];
+          content_type = "text/plain; charset=utf-8";
+        },
+        {
+          content = [
+            "<html><body>",
+            "<p>Authenticated username: $user</p>",
+            "<p>IP: $ip</p>",
+            "<p>Queue ID: $qid</p>",
+            "<p>Action: $action</p>",
+            "<p>Score: $score</p>",
+            "<p>Symbols: $symbols_sorted</p>",
+            "</body></html>"
+          ];
+          content_type = "text/html; charset=utf-8";
+        }
+      ];
+    }
+
+  }
+
+}
+~~~
+
+Both parts are inline and unnamed, so `auto_grouping` emits a top-level `multipart/alternative` containing `text/plain` first and `text/html` second.
 
 ### General metadata
 
