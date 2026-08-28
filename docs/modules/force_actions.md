@@ -48,6 +48,8 @@ When more than one rule matches for the same message, `priority` decides which o
 
 An invalid `priority` (not one of the named values or a number, a fractional value, a value outside `0`-`3`, or `NaN`) is logged as a warning and the rule falls back to the default priority. Setting `priority` together with `least` also logs a warning, since a `least` rule can never outrank a non-`least` result — `priority` then only affects ordering among other `least` rules.
 
+When a rule with an explicit `priority` fires, its `FORCE_ACTION_*` symbol carries a `priority:N` option (alongside the forced action name) so the value is visible in the scan output rather than only in the passthrough result.
+
 ### Legacy configuration
 
 Older configurations used a flat `actions {}` block with action names as keys mapping to lists of expressions, and an optional `messages {}` block mapping expressions to SMTP messages:
