@@ -236,6 +236,8 @@ The data definition part specifies what needs to be extracted. Here is the list 
 | `metatokens` | — | Get metatokens for a message as strings
 | `rspamd_hostname` | — | Get hostname of the filter server
 
+For `symbol()`, [`rbl`](/modules/rbl), [`reputation`](/modules/reputation), `clustering`, [`multimap`](/modules/multimap) and `ratelimit` rules automatically register an execution-order dependency on the referenced symbol, so it is guaranteed to have run first; this also covers map-expression-based rules such as multimap `combined` rules, DMARC's `munge_map_condition` and the reputation module's `whitelist` expression. Other selector consumers (e.g. `regexp`) still require an explicit `rspamd_config:register_dependency` call for that ordering.
+
 ## Transformation functions
 
 | Transform method | Version | Description | Example |
