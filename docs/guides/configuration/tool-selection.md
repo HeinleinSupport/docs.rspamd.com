@@ -29,7 +29,7 @@ Best starting point for: single-pattern detections, cheap text checks, header/bo
 - Can be gated with `re_conditions` to validate matches precisely
 - Keep logic minimal; offload heavy checks to later stages
 
-Example with conditions (inspired by `rules/bitcoin.lua`):
+Example with conditions:
 
 ```lua
 config.regexp['BITCOIN_ADDR'] = {
